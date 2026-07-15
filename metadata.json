@@ -1,0 +1,6 @@
+{
+  "name": "Daily Trip Logs",
+  "description": "Log vehicle trip details, track mileage, and schedule trip alarms for upcoming meetings and journeys.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
