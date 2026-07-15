@@ -37,6 +37,14 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
     val syncUrl = MutableStateFlow("")
     val isSyncing = MutableStateFlow(false)
     val lastSyncTime = MutableStateFlow(0L)
+
+    // Dark Mode settings
+    val isDarkMode = MutableStateFlow(prefs.getBoolean("is_dark_mode", false))
+
+    fun setDarkMode(enabled: Boolean) {
+        isDarkMode.value = enabled
+        prefs.edit().putBoolean("is_dark_mode", enabled).apply()
+    }
     
     // UI state streams from Database Room flows
     val tripLogs: StateFlow<List<TripLog>>
@@ -126,6 +134,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                 val pendingVehicles = prefs.getStringSet("pending_vehicles", emptySet()) ?: emptySet()
                 val pendingDrivers = prefs.getStringSet("pending_drivers", emptySet()) ?: emptySet()
                 val pendingAssistants = prefs.getStringSet("pending_assistants", emptySet()) ?: emptySet()
+                val pendingTrips = prefs.getStringSet("pending_trips", emptySet()) ?: emptySet()
 
                 // 2. Fetch all entries from SheetDB via GET
                 val client = okhttp3.OkHttpClient.Builder()
@@ -193,6 +202,8 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
+                    val updatedPendingTrips = pendingTrips.toMutableSet()
+
                     // 3. Add server trips that are missing locally to local DB
                     var newTripsAdded = 0
                     for (serverTrip in serverTrips) {
@@ -209,7 +220,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // 4. Find local trips that are missing on server and upload them via POST
+                    // 4. Find local trips that are missing on server and upload them via POST if pending
                     val tripsToUpload = mutableListOf<TripLog>()
                     for (localTrip in localTrips) {
                         val existsOnServer = serverTrips.any { serverTrip ->
@@ -219,7 +230,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             localTrip.dateTimeMillis == serverTrip.dateTimeMillis
                         }
                         if (!existsOnServer) {
-                            tripsToUpload.add(localTrip)
+                            val isPending = localTrip.dateTimeMillis.toString() in pendingTrips
+                            if (isPending) {
+                                tripsToUpload.add(localTrip)
+                            } else {
+                                // Already synced before but deleted on server, so delete locally as well
+                                repository.deleteTripLogById(localTrip.id)
+                            }
                         }
                     }
 
@@ -310,7 +327,11 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
 
                         client.newCall(postRequest).execute().use { postResponse ->
                             if (postResponse.isSuccessful) {
+                                for (uploadedTrip in tripsToUpload) {
+                                    updatedPendingTrips.remove(uploadedTrip.dateTimeMillis.toString())
+                                }
                                 prefs.edit()
+                                    .putStringSet("pending_trips", updatedPendingTrips)
                                     .putStringSet("pending_vehicles", updatedPendingVehicles)
                                     .putStringSet("pending_drivers", updatedPendingDrivers)
                                     .putStringSet("pending_assistants", updatedPendingAssistants)
@@ -406,6 +427,12 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                 fuelLiters = fuelLiters
             )
             repository.insertTripLog(log)
+            
+            // Mark trip as pending upload
+            val pending = prefs.getStringSet("pending_trips", emptySet())?.toMutableSet() ?: mutableSetOf()
+            pending.add(dateTimeMillis.toString())
+            prefs.edit().putStringSet("pending_trips", pending).apply()
+            
             // Trigger auto sync in background if URL is set
             if (syncUrl.value.isNotBlank()) {
                 syncWithGoogleSheets()
@@ -414,8 +441,41 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteTripLog(id: Int) {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val tripLog = tripLogs.value.find { it.id == id }
             repository.deleteTripLogById(id)
+            
+            if (tripLog != null) {
+                // Remove from pending trips
+                val pending = prefs.getStringSet("pending_trips", emptySet())?.toMutableSet() ?: mutableSetOf()
+                if (pending.remove(tripLog.dateTimeMillis.toString())) {
+                    prefs.edit().putStringSet("pending_trips", pending).apply()
+                }
+                
+                // Call SheetDB DELETE API to remove it from server
+                val urlStr = syncUrl.value
+                if (urlStr.isNotBlank()) {
+                    try {
+                        val client = okhttp3.OkHttpClient.Builder()
+                            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                            .build()
+                        
+                        val deleteUrl = "$urlStr/dateTimeMillis/${tripLog.dateTimeMillis}"
+                        val request = okhttp3.Request.Builder()
+                            .url(deleteUrl)
+                            .delete()
+                            .build()
+                        
+                        client.newCall(request).execute().use { response ->
+                            if (response.isSuccessful) {
+                                // Deleted from server successfully
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
         }
     }
 

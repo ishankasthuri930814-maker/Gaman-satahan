@@ -122,6 +122,21 @@ fun MainAppScreen(viewModel: TripViewModel) {
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
                 actions = {
+                    // Dark Mode Toggle Button
+                    val isDark by viewModel.isDarkMode.collectAsStateWithLifecycle()
+                    IconButton(
+                        onClick = { viewModel.setDarkMode(!isDark) },
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .testTag("dark_mode_toggle_button")
+                    ) {
+                        Icon(
+                            imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            contentDescription = if (isDark) "Switch Mode" else "Switch Mode",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+
                     // Quick Language Switcher Button
                     Button(
                         onClick = {
@@ -468,18 +483,50 @@ fun TripLogsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
 }
 
 @Composable
+fun DetailRow(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, iconColor: androidx.compose.ui.graphics.Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = iconColor,
+            modifier = Modifier.size(20.dp).padding(top = 2.dp)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column {
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+            Text(
+                text = value,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
 fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
     val sdf = SimpleDateFormat("yyyy MMM dd - hh:mm a", Locale.getDefault())
     val formattedDate = sdf.format(Date(trip.dateTimeMillis))
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var enteredPassword by remember { mutableStateOf("") }
     var passwordError by remember { mutableStateOf(false) }
+    var showDetailsDialog by remember { mutableStateOf(false) }
 
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier
             .fillMaxWidth()
+            .clickable { showDetailsDialog = true }
             .border(
                 1.dp,
                 MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
@@ -551,78 +598,94 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
             )
 
             // Vehicle and Crew Details
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Vehicle
-                Column {
-                    LabelText(if (currentLang == AppLanguage.SINHALA) "වාහනය" else "Vehicle")
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.LocalShipping,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (trip.vehicleName == "Vehicle A") {
-                                Translations.getString("vehicle_a", currentLang)
-                            } else {
-                                Translations.getString("vehicle_b", currentLang)
-                            },
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp
-                        )
-                    }
+                // Vehicle Row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LocalShipping,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = (if (currentLang == AppLanguage.SINHALA) "වාහනය: " else "Vehicle: "),
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = if (trip.vehicleName == "Vehicle A") {
+                            Translations.getString("vehicle_a", currentLang)
+                        } else if (trip.vehicleName == "Vehicle B") {
+                            Translations.getString("vehicle_b", currentLang)
+                        } else {
+                            trip.vehicleName.ifBlank { "-" }
+                        },
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
 
-                // Driver
-                Column {
-                    LabelText(Translations.getString("driver", currentLang))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = trip.driverName.ifBlank { "-" },
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp
-                        )
-                    }
+                // Driver Row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = Translations.getString("driver", currentLang) + ": ",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = trip.driverName.ifBlank { "-" },
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
 
-                // Assistant
-                Column {
-                    LabelText(Translations.getString("assistant", currentLang))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SupportAgent,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = trip.assistantName.ifBlank { "-" },
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp
-                        )
-                    }
+                // Assistant Row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SupportAgent,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = Translations.getString("assistant", currentLang) + ": ",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = trip.assistantName.ifBlank { "-" },
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
@@ -631,53 +694,61 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
                     modifier = Modifier.padding(vertical = 12.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                 )
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (trip.fuelOrderNumber.isNotBlank()) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            LabelText(if (currentLang == AppLanguage.SINHALA) "ඉන්ධන ඇනවුම් අංකය" else "Fuel Order No.")
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(top = 2.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ConfirmationNumber,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = trip.fuelOrderNumber,
-                                    fontWeight = FontWeight.Medium,
-                                    fontSize = 13.sp
-                                )
-                            }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ConfirmationNumber,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = (if (currentLang == AppLanguage.SINHALA) "ඉන්ධන ඇනවුම් අංකය: " else "Fuel Order No.: "),
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = trip.fuelOrderNumber,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
 
                     if (trip.fuelLiters > 0.0) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            LabelText(if (currentLang == AppLanguage.SINHALA) "ඉන්ධන ලීටර් ප්‍රමාණය" else "Fuel Liters")
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(top = 2.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.LocalGasStation,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "${trip.fuelLiters} L",
-                                    fontWeight = FontWeight.Medium,
-                                    fontSize = 13.sp
-                                )
-                            }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.LocalGasStation,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = (if (currentLang == AppLanguage.SINHALA) "ඉන්ධන ලීටර් ප්‍රමාණය: " else "Fuel Liters: "),
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${trip.fuelLiters} L",
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
                 }
@@ -722,6 +793,131 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (showDetailsDialog) {
+        AlertDialog(
+            onDismissRequest = { showDetailsDialog = false },
+            confirmButton = {
+                Button(
+                    onClick = { showDetailsDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text(if (currentLang == AppLanguage.SINHALA) "නියමයි" else "Close")
+                }
+            },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Place,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (currentLang == AppLanguage.SINHALA) "ගමන් විස්තරය" else "Trip Details",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // Destination
+                    DetailRow(
+                        label = if (currentLang == AppLanguage.SINHALA) "ගමනාන්තය" else "Destination",
+                        value = trip.destination,
+                        icon = Icons.Default.Place,
+                        iconColor = MaterialTheme.colorScheme.primary
+                    )
+                    
+                    // Reason
+                    DetailRow(
+                        label = if (currentLang == AppLanguage.SINHALA) "හේතුව" else "Reason / Note",
+                        value = trip.reason.ifBlank { "-" },
+                        icon = Icons.Default.Notes,
+                        iconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    // Distance
+                    DetailRow(
+                        label = if (currentLang == AppLanguage.SINHALA) "දුර (කි.මී.)" else "Distance",
+                        value = "${trip.distanceKm} km",
+                        icon = Icons.AutoMirrored.Filled.DirectionsRun,
+                        iconColor = MaterialTheme.colorScheme.secondary
+                    )
+                    
+                    // Date & Time
+                    DetailRow(
+                        label = if (currentLang == AppLanguage.SINHALA) "දිනය සහ වේලාව" else "Date & Time",
+                        value = formattedDate,
+                        icon = Icons.Default.CalendarToday,
+                        iconColor = MaterialTheme.colorScheme.primary
+                    )
+                    
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    
+                    // Vehicle
+                    DetailRow(
+                        label = if (currentLang == AppLanguage.SINHALA) "වාහනය" else "Vehicle",
+                        value = if (trip.vehicleName == "Vehicle A") {
+                            Translations.getString("vehicle_a", currentLang)
+                        } else if (trip.vehicleName == "Vehicle B") {
+                            Translations.getString("vehicle_b", currentLang)
+                        } else {
+                            trip.vehicleName.ifBlank { "-" }
+                        },
+                        icon = Icons.Default.LocalShipping,
+                        iconColor = MaterialTheme.colorScheme.secondary
+                    )
+                    
+                    // Driver
+                    DetailRow(
+                        label = Translations.getString("driver", currentLang),
+                        value = trip.driverName.ifBlank { "-" },
+                        icon = Icons.Default.Person,
+                        iconColor = MaterialTheme.colorScheme.primary
+                    )
+                    
+                    // Assistant
+                    DetailRow(
+                        label = Translations.getString("assistant", currentLang),
+                        value = trip.assistantName.ifBlank { "-" },
+                        icon = Icons.Default.SupportAgent,
+                        iconColor = MaterialTheme.colorScheme.tertiary
+                    )
+                    
+                    // Fuel Details
+                    if (trip.fuelOrderNumber.isNotBlank() || trip.fuelLiters > 0.0) {
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        
+                        if (trip.fuelOrderNumber.isNotBlank()) {
+                            DetailRow(
+                                label = if (currentLang == AppLanguage.SINHALA) "ඉන්ධන ඇනවුම් අංකය" else "Fuel Order No.",
+                                value = trip.fuelOrderNumber,
+                                icon = Icons.Default.ConfirmationNumber,
+                                iconColor = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        
+                        if (trip.fuelLiters > 0.0) {
+                            DetailRow(
+                                label = if (currentLang == AppLanguage.SINHALA) "ඉන්ධන ලීටර් ප්‍රමාණය" else "Fuel Liters",
+                                value = "${trip.fuelLiters} L",
+                                icon = Icons.Default.LocalGasStation,
+                                iconColor = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        )
     }
 
     if (showDeleteConfirm) {

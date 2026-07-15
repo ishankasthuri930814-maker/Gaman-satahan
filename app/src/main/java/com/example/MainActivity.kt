@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import com.example.ui.screens.MainAppScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.TripViewModel
@@ -16,7 +18,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val isDark by viewModel.isDarkMode.collectAsState()
+            MyApplicationTheme(darkTheme = isDark) {
                 MainAppScreen(viewModel = viewModel)
             }
         }
