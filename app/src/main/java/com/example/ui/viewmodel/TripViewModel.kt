@@ -33,6 +33,11 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: TripRepository
     private val prefs = application.getSharedPreferences("vahanalog_prefs", Context.MODE_PRIVATE)
 
+    // Sheetson API configurations
+    private val SHEETSON_API_KEY = "x467G3-QIam9I2sLvtETpX6Pj8hgd_VB2p-NmWMuOQS1TQoXLnBeqE5nPi4"
+    private val SHEETSON_SPREADSHEET_ID = "1fxDVV0HtYwuGAj7iiPMMRzbzMNnE5NWrmEXMRyHg4NU"
+    private val SHEETSON_SHEET_NAME = "Sheet1"
+
     // Sync status states
     val syncUrl = MutableStateFlow("")
     val isSyncing = MutableStateFlow(false)
@@ -92,8 +97,8 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             initialValue = emptyList()
         )
 
-        // Set hardcoded SheetDB URL as requested by the user, making it unchangeable and safe
-        syncUrl.value = "https://sheetdb.io/api/v1/jmizl4njqajdl"
+        // Set hardcoded Sheetson URL as requested by the user, making it unchangeable and safe
+        syncUrl.value = "https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME"
         lastSyncTime.value = prefs.getLong("last_sync_time", 0L)
 
         // Auto sync on start and then periodically every 45 seconds automatically
@@ -136,14 +141,16 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                 val pendingAssistants = prefs.getStringSet("pending_assistants", emptySet()) ?: emptySet()
                 val pendingTrips = prefs.getStringSet("pending_trips", emptySet()) ?: emptySet()
 
-                // 2. Fetch all entries from SheetDB via GET
+                // 2. Fetch all entries from Sheetson via GET
                 val client = okhttp3.OkHttpClient.Builder()
                     .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
 
                 val getRequest = okhttp3.Request.Builder()
-                    .url(urlStr)
+                    .url("https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME")
+                    .header("Authorization", "Bearer $SHEETSON_API_KEY")
+                    .header("X-Spreadsheet-Id", SHEETSON_SPREADSHEET_ID)
                     .get()
                     .build()
 
@@ -156,10 +163,11 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         return@use
                     }
 
-                    val responseBodyStr = response.body?.string() ?: "[]"
+                    val responseBodyStr = response.body?.string() ?: "{\"results\":[]}"
 
-                    // Parse response array of server entries
-                    val serverArray = org.json.JSONArray(responseBodyStr)
+                    // Parse response results array of server entries
+                    val rootObj = org.json.JSONObject(responseBodyStr)
+                    val serverArray = rootObj.optJSONArray("results") ?: org.json.JSONArray()
                     val serverTrips = mutableListOf<TripLog>()
                     val serverVehicles = mutableListOf<VehicleSetting>()
                     val serverDrivers = mutableListOf<DriverSetting>()
@@ -201,8 +209,6 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             serverTrips.add(trip)
                         }
                     }
-
-                    val updatedPendingTrips = pendingTrips.toMutableSet()
 
                     // 3. Add server trips that are missing locally to local DB
                     var newTripsAdded = 0
@@ -257,7 +263,6 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             obj.put("distanceKm", 0.0)
                             obj.put("dateTimeMillis", System.currentTimeMillis())
                             configsToUpload.add(obj)
-                            updatedPendingVehicles.remove(lv.plateNumber)
                         }
                     }
 
@@ -275,7 +280,6 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             obj.put("distanceKm", 0.0)
                             obj.put("dateTimeMillis", System.currentTimeMillis())
                             configsToUpload.add(obj)
-                            updatedPendingDrivers.remove(ld.name)
                         }
                     }
 
@@ -293,11 +297,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             obj.put("distanceKm", 0.0)
                             obj.put("dateTimeMillis", System.currentTimeMillis())
                             configsToUpload.add(obj)
-                            updatedPendingAssistants.remove(la.name)
                         }
                     }
 
-                    val postArray = org.json.JSONArray()
+                    val updatedPendingTrips = pendingTrips.toMutableSet()
+                    var hasUploadErrors = false
+
+                    // Send individual POST requests to Sheetson for each row
                     for (trip in tripsToUpload) {
                         val obj = org.json.JSONObject()
                         obj.put("destination", trip.destination)
@@ -309,36 +315,69 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         obj.put("dateTimeMillis", trip.dateTimeMillis)
                         obj.put("fuelOrderNumber", trip.fuelOrderNumber)
                         obj.put("fuelLiters", trip.fuelLiters)
-                        postArray.put(obj)
-                    }
-                    for (config in configsToUpload) {
-                        postArray.put(config)
-                    }
 
-                    if (postArray.length() > 0) {
-                        val payload = org.json.JSONObject()
-                        payload.put("data", postArray)
-
-                        val requestBody = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                        val requestBody = obj.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
                         val postRequest = okhttp3.Request.Builder()
-                            .url(urlStr)
+                            .url("https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME")
+                            .header("Authorization", "Bearer $SHEETSON_API_KEY")
+                            .header("X-Spreadsheet-Id", SHEETSON_SPREADSHEET_ID)
                             .post(requestBody)
                             .build()
 
-                        client.newCall(postRequest).execute().use { postResponse ->
-                            if (postResponse.isSuccessful) {
-                                for (uploadedTrip in tripsToUpload) {
-                                    updatedPendingTrips.remove(uploadedTrip.dateTimeMillis.toString())
+                        try {
+                            client.newCall(postRequest).execute().use { postResponse ->
+                                if (postResponse.isSuccessful) {
+                                    updatedPendingTrips.remove(trip.dateTimeMillis.toString())
+                                } else {
+                                    hasUploadErrors = true
                                 }
-                                prefs.edit()
-                                    .putStringSet("pending_trips", updatedPendingTrips)
-                                    .putStringSet("pending_vehicles", updatedPendingVehicles)
-                                    .putStringSet("pending_drivers", updatedPendingDrivers)
-                                    .putStringSet("pending_assistants", updatedPendingAssistants)
-                                    .apply()
                             }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            hasUploadErrors = true
                         }
                     }
+
+                    for (config in configsToUpload) {
+                        val requestBody = config.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                        val postRequest = okhttp3.Request.Builder()
+                            .url("https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME")
+                            .header("Authorization", "Bearer $SHEETSON_API_KEY")
+                            .header("X-Spreadsheet-Id", SHEETSON_SPREADSHEET_ID)
+                            .post(requestBody)
+                            .build()
+
+                        try {
+                            client.newCall(postRequest).execute().use { postResponse ->
+                                if (postResponse.isSuccessful) {
+                                    val dest = config.optString("destination")
+                                    if (dest.startsWith("__CONFIG_VEHICLE__")) {
+                                        val plate = dest.removePrefix("__CONFIG_VEHICLE__")
+                                        updatedPendingVehicles.remove(plate)
+                                    } else if (dest.startsWith("__CONFIG_DRIVER__")) {
+                                        val name = dest.removePrefix("__CONFIG_DRIVER__")
+                                        updatedPendingDrivers.remove(name)
+                                    } else if (dest.startsWith("__CONFIG_ASSISTANT__")) {
+                                        val name = dest.removePrefix("__CONFIG_ASSISTANT__")
+                                        updatedPendingAssistants.remove(name)
+                                    }
+                                } else {
+                                    hasUploadErrors = true
+                                }
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            hasUploadErrors = true
+                        }
+                    }
+
+                    // Save updated pending lists
+                    prefs.edit()
+                        .putStringSet("pending_trips", updatedPendingTrips)
+                        .putStringSet("pending_vehicles", updatedPendingVehicles)
+                        .putStringSet("pending_drivers", updatedPendingDrivers)
+                        .putStringSet("pending_assistants", updatedPendingAssistants)
+                        .apply()
 
                     // 6. Align local databases with server configuration
                     for (sv in serverVehicles) {
