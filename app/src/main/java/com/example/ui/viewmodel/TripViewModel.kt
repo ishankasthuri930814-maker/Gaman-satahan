@@ -10,6 +10,7 @@ import com.example.data.model.TripLog
 import com.example.data.model.VehicleSetting
 import com.example.data.model.DriverSetting
 import com.example.data.model.AssistantSetting
+import com.example.data.model.OdometerCalculation
 import com.example.data.repository.TripRepository
 import com.example.ui.translation.AppLanguage
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,13 +59,19 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
     val vehicles: StateFlow<List<VehicleSetting>>
     val drivers: StateFlow<List<DriverSetting>>
     val assistants: StateFlow<List<AssistantSetting>>
+    val odometerCalculations: StateFlow<List<OdometerCalculation>>
 
     // App language selection state
     val currentLanguage = MutableStateFlow(AppLanguage.SINHALA) // Default to Sinhala for local user comfort
 
     init {
         val database = AppDatabase.getDatabase(application)
-        repository = TripRepository(database.tripDao(), database.plannedTripDao(), database.settingsDao())
+        repository = TripRepository(
+            database.tripDao(),
+            database.plannedTripDao(),
+            database.settingsDao(),
+            database.odometerCalculationDao()
+        )
         
         tripLogs = repository.allTripLogs.stateIn(
             scope = viewModelScope,
@@ -91,6 +98,12 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         assistants = repository.allAssistants.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        odometerCalculations = repository.allOdometerCalculations.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
@@ -620,6 +633,45 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateTripLog(
+        id: Int,
+        destination: String,
+        reason: String,
+        vehicleName: String,
+        driverName: String,
+        assistantName: String,
+        distanceKm: Double,
+        dateTimeMillis: Long,
+        fuelOrderNumber: String = "",
+        fuelLiters: Double = 0.0
+    ) {
+        viewModelScope.launch {
+            val log = TripLog(
+                id = id,
+                destination = destination,
+                reason = reason,
+                vehicleName = vehicleName,
+                driverName = driverName,
+                assistantName = assistantName,
+                distanceKm = distanceKm,
+                dateTimeMillis = dateTimeMillis,
+                fuelOrderNumber = fuelOrderNumber,
+                fuelLiters = fuelLiters
+            )
+            repository.updateTripLog(log)
+            
+            // Mark trip as pending upload
+            val pending = prefs.getStringSet("pending_trips", emptySet())?.toMutableSet() ?: mutableSetOf()
+            pending.add(dateTimeMillis.toString())
+            prefs.edit().putStringSet("pending_trips", pending).apply()
+            
+            // Trigger auto sync in background if URL is set
+            if (syncUrl.value.isNotBlank()) {
+                syncWithGoogleSheetsBackground()
+            }
+        }
+    }
+
     fun deleteTripLog(id: Int) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val tripLog = repository.allTripLogs.first().find { it.id == id }
@@ -819,6 +871,44 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             prefs.edit().putStringSet("pending_deletions_assistants", pendingDeletions).apply()
             
             deleteConfigFromServer("__CONFIG_ASSISTANT__$name", "pending_deletions_assistants", name)
+        }
+    }
+
+    fun insertOdometerCalculation(
+        vehicleName: String,
+        initialOdometer: Double,
+        fuelEfficiency: Double,
+        fuelConsumed: Double,
+        initialFuel: Double,
+        fuelObtained: Double,
+        finalOdometer: Double,
+        remainingFuel: Double
+    ) {
+        viewModelScope.launch {
+            val calc = OdometerCalculation(
+                vehicleName = vehicleName,
+                initialOdometer = initialOdometer,
+                fuelEfficiency = fuelEfficiency,
+                fuelConsumed = fuelConsumed,
+                initialFuel = initialFuel,
+                fuelObtained = fuelObtained,
+                finalOdometer = finalOdometer,
+                remainingFuel = remainingFuel,
+                dateTimeMillis = System.currentTimeMillis()
+            )
+            repository.insertOdometerCalculation(calc)
+        }
+    }
+
+    fun deleteOdometerCalculation(id: Int) {
+        viewModelScope.launch {
+            repository.deleteOdometerCalculationById(id)
+        }
+    }
+
+    fun clearAllOdometerCalculations() {
+        viewModelScope.launch {
+            repository.deleteAllOdometerCalculations()
         }
     }
 }

@@ -60,6 +60,7 @@ enum class AppTab {
     TRIPS,
     REMINIDERS,
     ANALYTICS,
+    CALCULATOR,
     SETTINGS
 }
 
@@ -277,6 +278,13 @@ fun MainAppScreen(viewModel: TripViewModel) {
                     modifier = Modifier.testTag("analytics_tab_button")
                 )
                 NavigationBarItem(
+                    selected = selectedTab == AppTab.CALCULATOR,
+                    onClick = { selectedTab = AppTab.CALCULATOR },
+                    icon = { Icon(Icons.Default.Calculate, contentDescription = "Calculator") },
+                    label = { Text(Translations.getString("calculator_tab", currentLang)) },
+                    modifier = Modifier.testTag("calculator_tab_button")
+                )
+                NavigationBarItem(
                     selected = selectedTab == AppTab.SETTINGS,
                     onClick = { selectedTab = AppTab.SETTINGS },
                     icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
@@ -311,6 +319,9 @@ fun MainAppScreen(viewModel: TripViewModel) {
                 AppTab.ANALYTICS -> {
                     AnalyticsScreen(viewModel = viewModel, currentLang = currentLang)
                 }
+                AppTab.CALCULATOR -> {
+                    CalculatorScreen(viewModel = viewModel, currentLang = currentLang)
+                }
                 AppTab.SETTINGS -> {
                     SettingsScreen(viewModel = viewModel, currentLang = currentLang)
                 }
@@ -330,6 +341,7 @@ fun TripLogsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
     val drivers by viewModel.drivers.collectAsStateWithLifecycle()
     val assistants by viewModel.assistants.collectAsStateWithLifecycle()
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingTrip by remember { mutableStateOf<TripLog?>(null) }
 
     // Sync state flows
     val syncUrl by viewModel.syncUrl.collectAsStateWithLifecycle()
@@ -405,9 +417,12 @@ fun TripLogsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                 }
             } else {
                 items(trips, key = { it.id }) { trip ->
-                    TripLogCard(trip = trip, currentLang = currentLang, onDelete = {
-                        viewModel.deleteTripLog(trip.id)
-                    })
+                    TripLogCard(
+                        trip = trip,
+                        currentLang = currentLang,
+                        onDelete = { viewModel.deleteTripLog(trip.id) },
+                        onEdit = { editingTrip = it }
+                    )
                 }
             }
 
@@ -478,6 +493,51 @@ fun TripLogsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                 }
             )
         }
+
+        if (editingTrip != null) {
+            AddTripLogDialog(
+                currentLang = currentLang,
+                vehicles = vehicles,
+                drivers = drivers,
+                assistants = assistants,
+                onDismiss = { editingTrip = null },
+                initialTripLog = editingTrip,
+                onSave = { destination, reason, vehicle, driver, assistant, distance, timestamp, fuelOrder, liters ->
+                    // Auto-add new custom values to Settings/Google Sheet Configuration
+                    if (vehicle.isNotBlank() && vehicles.none { it.plateNumber.trim().equals(vehicle.trim(), ignoreCase = true) }) {
+                        viewModel.addVehicle(vehicle.trim(), "")
+                    }
+                    if (driver.isNotBlank() && drivers.none { it.name.trim().equals(driver.trim(), ignoreCase = true) }) {
+                        viewModel.addDriver(driver.trim(), "")
+                    }
+                    val noAssistantTextSinhala = "හෙල්පර් කෙනෙක් නැත"
+                    val noAssistantTextEnglish = "No Assistant"
+                    if (assistant.isNotBlank() && 
+                        assistant != noAssistantTextSinhala && 
+                        assistant != noAssistantTextEnglish &&
+                        assistants.none { it.name.trim().equals(assistant.trim(), ignoreCase = true) }
+                    ) {
+                        viewModel.addAssistant(assistant.trim(), "")
+                    }
+
+                    editingTrip?.let { oldTrip ->
+                        viewModel.updateTripLog(
+                            id = oldTrip.id,
+                            destination = destination,
+                            reason = reason,
+                            vehicleName = vehicle,
+                            driverName = driver,
+                            assistantName = assistant,
+                            distanceKm = distance,
+                            dateTimeMillis = timestamp,
+                            fuelOrderNumber = fuelOrder,
+                            fuelLiters = liters
+                        )
+                    }
+                    editingTrip = null
+                }
+            )
+        }
     }
 }
 
@@ -512,13 +572,22 @@ fun DetailRow(label: String, value: String, icon: androidx.compose.ui.graphics.v
 }
 
 @Composable
-fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
+fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit, onEdit: (TripLog) -> Unit) {
     val sdf = SimpleDateFormat("yyyy MMM dd - hh:mm a", Locale.getDefault())
     val formattedDate = sdf.format(Date(trip.dateTimeMillis))
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var enteredPassword by remember { mutableStateOf("") }
     var passwordError by remember { mutableStateOf(false) }
     var showDetailsDialog by remember { mutableStateOf(false) }
+    var showShareDialog by remember { mutableStateOf(false) }
+
+    if (showShareDialog) {
+        WhatsAppShareDialog(
+            trip = trip,
+            currentLang = currentLang,
+            onDismiss = { showShareDialog = false }
+        )
+    }
 
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -786,16 +855,45 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
                     )
                 }
 
-                IconButton(
-                    onClick = { showDeleteConfirm = true },
-                    modifier = Modifier.size(24.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = "Delete",
-                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
-                        modifier = Modifier.size(18.dp)
-                    )
+                    IconButton(
+                        onClick = { showShareDialog = true },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Share on WhatsApp",
+                            tint = Color(0xFF25D366),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { onEdit(trip) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Edit",
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -810,6 +908,41 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Text(if (currentLang == AppLanguage.SINHALA) "නියමයි" else "Close")
+                }
+            },
+            dismissButton = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = {
+                            showDetailsDialog = false
+                            showShareDialog = true
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            tint = Color(0xFF25D366),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (currentLang == AppLanguage.SINHALA) "බෙදාගන්න" else "Share",
+                            color = Color(0xFF25D366),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            showDetailsDialog = false
+                            onEdit(trip)
+                        }
+                    ) {
+                        Text(if (currentLang == AppLanguage.SINHALA) "සංස්කරණය කරන්න" else "Edit")
+                    }
                 }
             },
             title = {
@@ -1089,12 +1222,24 @@ fun AddTripLogDialog(
     drivers: List<com.example.data.model.DriverSetting>,
     assistants: List<com.example.data.model.AssistantSetting>,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String, String, Double, Long, String, Double) -> Unit
+    onSave: (String, String, String, String, String, Double, Long, String, Double) -> Unit,
+    initialTripLog: TripLog? = null
 ) {
     val context = LocalContext.current
-    var destination by remember { mutableStateOf("") }
-    val additionalStops = remember { mutableStateListOf<String>() }
-    var reason by remember { mutableStateOf("") }
+    
+    val parts = remember(initialTripLog) {
+        initialTripLog?.destination?.split(" ➔ ") ?: emptyList()
+    }
+    
+    var destination by remember { mutableStateOf(if (parts.isNotEmpty()) parts.first() else "") }
+    val additionalStops = remember { 
+        val list = mutableStateListOf<String>()
+        if (parts.size > 1) {
+            list.addAll(parts.drop(1))
+        }
+        list
+    }
+    var reason by remember { mutableStateOf(initialTripLog?.reason ?: "") }
     var showIncompleteDialog by remember { mutableStateOf(false) }
 
     if (showIncompleteDialog) {
@@ -1130,40 +1275,73 @@ fun AddTripLogDialog(
     }
     
     // Vehicle selection
-    var selectedVehicle by remember { mutableStateOf("") }
+    var selectedVehicle by remember { mutableStateOf(initialTripLog?.vehicleName ?: "") }
     var customVehicle by remember { mutableStateOf("") }
     var isCustomVehicleExpanded by remember { mutableStateOf(false) }
 
     // Driver selection
-    var selectedDriver by remember { mutableStateOf("") }
+    var selectedDriver by remember { mutableStateOf(initialTripLog?.driverName ?: "") }
     var customDriver by remember { mutableStateOf("") }
     var isCustomDriverExpanded by remember { mutableStateOf(false) }
 
     // Assistant selection
-    var selectedAssistant by remember { mutableStateOf("") }
+    var selectedAssistant by remember { mutableStateOf(initialTripLog?.assistantName ?: "") }
     var customAssistant by remember { mutableStateOf("") }
     var isCustomAssistantExpanded by remember { mutableStateOf(false) }
 
-    var distanceStr by remember { mutableStateOf("") }
-    var fuelOrderNumber by remember { mutableStateOf("") }
-    var fuelLitersStr by remember { mutableStateOf("") }
+    var distanceStr by remember { mutableStateOf(initialTripLog?.distanceKm?.toString() ?: "") }
+    var fuelOrderNumber by remember { mutableStateOf(initialTripLog?.fuelOrderNumber ?: "") }
+    var fuelLitersStr by remember { mutableStateOf(initialTripLog?.fuelLiters?.let { if (it > 0.0) it.toString() else "" } ?: "") }
 
     // Date/Time States
-    val calendar = remember { Calendar.getInstance() }
-    var selectedDateTime by remember { mutableStateOf(calendar.timeInMillis) }
-    var selectedDateOption by remember { mutableStateOf("today") }
+    val calendar = remember { Calendar.getInstance().apply { 
+        if (initialTripLog != null) {
+            timeInMillis = initialTripLog.dateTimeMillis
+        }
+    } }
+    var selectedDateTime by remember { mutableStateOf(initialTripLog?.dateTimeMillis ?: calendar.timeInMillis) }
+    var selectedDateOption by remember { mutableStateOf(if (initialTripLog != null) "custom" else "today") }
     val sdf = SimpleDateFormat("yyyy MMM dd - hh:mm a", Locale.getDefault())
 
     // Automatic pre-selection for standard values
     LaunchedEffect(vehicles, drivers, assistants) {
-        if (selectedVehicle.isEmpty() && vehicles.isNotEmpty()) {
-            selectedVehicle = vehicles.first().plateNumber
-        }
-        if (selectedDriver.isEmpty() && drivers.isNotEmpty()) {
-            selectedDriver = drivers.first().name
-        }
-        if (selectedAssistant.isEmpty() && assistants.isNotEmpty()) {
-            selectedAssistant = assistants.first().name
+        if (initialTripLog != null) {
+            val vName = initialTripLog.vehicleName
+            val isStdVehicle = vName == "Vehicle A" || vName == "Vehicle B" || vehicles.any { it.plateNumber == vName }
+            if (!isStdVehicle && vName.isNotBlank()) {
+                isCustomVehicleExpanded = true
+                customVehicle = vName
+            } else {
+                selectedVehicle = vName
+            }
+
+            val dName = initialTripLog.driverName
+            val isStdDriver = drivers.any { it.name == dName }
+            if (!isStdDriver && dName.isNotBlank()) {
+                isCustomDriverExpanded = true
+                customDriver = dName
+            } else {
+                selectedDriver = dName
+            }
+
+            val aName = initialTripLog.assistantName
+            val isStdAssistant = aName == "No Assistant" || aName == "හෙල්පර් කෙනෙක් නැත" || assistants.any { it.name == aName }
+            if (!isStdAssistant && aName.isNotBlank()) {
+                isCustomAssistantExpanded = true
+                customAssistant = aName
+            } else {
+                selectedAssistant = aName
+            }
+        } else {
+            if (selectedVehicle.isEmpty() && vehicles.isNotEmpty()) {
+                selectedVehicle = vehicles.first().plateNumber
+            }
+            if (selectedDriver.isEmpty() && drivers.isNotEmpty()) {
+                selectedDriver = drivers.first().name
+            }
+            if (selectedAssistant.isEmpty() && assistants.isNotEmpty()) {
+                selectedAssistant = assistants.first().name
+            }
         }
     }
 
@@ -1171,7 +1349,11 @@ fun AddTripLogDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = Translations.getString("add_trip", currentLang),
+                text = if (initialTripLog != null) {
+                    if (currentLang == AppLanguage.SINHALA) "ගමන් සටහන සංස්කරණය" else "Edit Trip Log"
+                } else {
+                    Translations.getString("add_trip", currentLang)
+                },
                 fontWeight = FontWeight.Bold,
                 fontSize = 20.sp
             )

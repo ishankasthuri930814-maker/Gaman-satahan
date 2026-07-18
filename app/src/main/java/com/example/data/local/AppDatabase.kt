@@ -16,6 +16,7 @@ import com.example.data.model.TripLog
 import com.example.data.model.VehicleSetting
 import com.example.data.model.DriverSetting
 import com.example.data.model.AssistantSetting
+import com.example.data.model.OdometerCalculation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,9 @@ interface TripDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTripLog(tripLog: TripLog): Long
+
+    @Update
+    suspend fun updateTripLog(tripLog: TripLog)
 
     @Delete
     suspend fun deleteTripLog(tripLog: TripLog)
@@ -108,15 +112,31 @@ interface SettingsDao {
     suspend fun deleteAllAssistants()
 }
 
+@Dao
+interface OdometerCalculationDao {
+    @Query("SELECT * FROM odometer_calculations ORDER BY dateTimeMillis DESC")
+    fun getAllOdometerCalculations(): Flow<List<OdometerCalculation>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOdometerCalculation(calculation: OdometerCalculation): Long
+
+    @Query("DELETE FROM odometer_calculations WHERE id = :id")
+    suspend fun deleteOdometerCalculationById(id: Int)
+
+    @Query("DELETE FROM odometer_calculations")
+    suspend fun deleteAllOdometerCalculations()
+}
+
 @Database(
-    entities = [TripLog::class, PlannedTrip::class, VehicleSetting::class, DriverSetting::class, AssistantSetting::class],
-    version = 3,
+    entities = [TripLog::class, PlannedTrip::class, VehicleSetting::class, DriverSetting::class, AssistantSetting::class, OdometerCalculation::class],
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun tripDao(): TripDao
     abstract fun plannedTripDao(): PlannedTripDao
     abstract fun settingsDao(): SettingsDao
+    abstract fun odometerCalculationDao(): OdometerCalculationDao
 
     companion object {
         @Volatile

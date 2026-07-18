@@ -3,20 +3,24 @@ package com.example.data.repository
 import com.example.data.local.PlannedTripDao
 import com.example.data.local.SettingsDao
 import com.example.data.local.TripDao
+import com.example.data.local.OdometerCalculationDao
 import com.example.data.model.PlannedTrip
 import com.example.data.model.TripLog
 import com.example.data.model.VehicleSetting
 import com.example.data.model.DriverSetting
 import com.example.data.model.AssistantSetting
+import com.example.data.model.OdometerCalculation
 import kotlinx.coroutines.flow.Flow
 
 class TripRepository(
     private val tripDao: TripDao,
     private val plannedTripDao: PlannedTripDao,
-    private val settingsDao: SettingsDao
+    private val settingsDao: SettingsDao,
+    private val odometerCalculationDao: OdometerCalculationDao
 ) {
     val allTripLogs: Flow<List<TripLog>> = tripDao.getAllTripLogs()
     val allPlannedTrips: Flow<List<PlannedTrip>> = plannedTripDao.getAllPlannedTrips()
+    val allOdometerCalculations: Flow<List<OdometerCalculation>> = odometerCalculationDao.getAllOdometerCalculations()
 
     // Settings flows
     val allVehicles: Flow<List<VehicleSetting>> = settingsDao.getAllVehicles()
@@ -25,6 +29,10 @@ class TripRepository(
 
     suspend fun insertTripLog(tripLog: TripLog): Long {
         return tripDao.insertTripLog(tripLog)
+    }
+
+    suspend fun updateTripLog(tripLog: TripLog) {
+        tripDao.updateTripLog(tripLog)
     }
 
     suspend fun deleteTripLogById(id: Int) {
@@ -98,6 +106,19 @@ class TripRepository(
 
     suspend fun deleteAllAssistants() {
         settingsDao.deleteAllAssistants()
+    }
+
+    // Odometer calculation actions
+    suspend fun insertOdometerCalculation(calculation: OdometerCalculation): Long {
+        return odometerCalculationDao.insertOdometerCalculation(calculation)
+    }
+
+    suspend fun deleteOdometerCalculationById(id: Int) {
+        odometerCalculationDao.deleteOdometerCalculationById(id)
+    }
+
+    suspend fun deleteAllOdometerCalculations() {
+        odometerCalculationDao.deleteAllOdometerCalculations()
     }
 }
 

@@ -23,6 +23,10 @@ object Translations {
             AppLanguage.ENGLISH to "Analytics",
             AppLanguage.SINHALA to "වාර්තා සහ විස්තර"
         ),
+        "calculator_tab" to mapOf(
+            AppLanguage.ENGLISH to "Calculator",
+            AppLanguage.SINHALA to "මීටර ගණකය"
+        ),
         "add_trip" to mapOf(
             AppLanguage.ENGLISH to "Log New Trip",
             AppLanguage.SINHALA to "අලුත් ගමනක් ලියන්න"

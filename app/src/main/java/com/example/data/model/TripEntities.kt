@@ -50,3 +50,17 @@ data class AssistantSetting(
     val phone: String = ""
 )
 
+@Entity(tableName = "odometer_calculations")
+data class OdometerCalculation(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val vehicleName: String,
+    val initialOdometer: Double,
+    val fuelEfficiency: Double,
+    val fuelConsumed: Double,
+    val initialFuel: Double,
+    val fuelObtained: Double,
+    val finalOdometer: Double,
+    val remainingFuel: Double,
+    val dateTimeMillis: Long
+)
+
