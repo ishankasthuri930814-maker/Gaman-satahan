@@ -3286,7 +3286,9 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                     Text(
                         text = if (currentLang == AppLanguage.SINHALA) "වාහන" else "Vehicles",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 icon = { Icon(Icons.Default.DirectionsCar, contentDescription = null) }
@@ -3298,7 +3300,9 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                     Text(
                         text = if (currentLang == AppLanguage.SINHALA) "ඩ්‍රයිවර්ලා" else "Drivers",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 icon = { Icon(Icons.Default.Person, contentDescription = null) }
@@ -3310,7 +3314,9 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                     Text(
                         text = if (currentLang == AppLanguage.SINHALA) "හෙල්පර්ලා" else "Assistants",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 icon = { Icon(Icons.Default.Groups, contentDescription = null) }
@@ -3322,7 +3328,9 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                     Text(
                         text = if (currentLang == AppLanguage.SINHALA) "Sync" else "Sync",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 icon = { Icon(Icons.Default.Cloud, contentDescription = null) }
@@ -3866,6 +3874,15 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "Developer: Ishan Maduranga",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
     }
 
     // Password Prompt Dialog for Admin Settings Actions

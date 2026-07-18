@@ -42,10 +42,10 @@ private val calcTranslations = mapOf(
     "initial_fuel" to mapOf(AppLanguage.ENGLISH to "Initial Fuel in Tank (Liters)", AppLanguage.SINHALA to "ආරම්භයේදී ටැංකියේ තිබූ ඉන්ධන (ලීටර)"),
     "obtained_fuel" to mapOf(AppLanguage.ENGLISH to "Fuel Obtained/Pumped (Liters)", AppLanguage.SINHALA to "අලුතින් ලබාගත් ඉන්ධන (ලීටර)"),
     "calc_results" to mapOf(AppLanguage.ENGLISH to "Calculation Results", AppLanguage.SINHALA to "ගණනය කළ ප්‍රතිඵල"),
-    "distance_traveled" to mapOf(AppLanguage.ENGLISH to "Distance Traveled", AppLanguage.SINHALA to "ධාවනය කළ දුර"),
+    "distance_traveled" to mapOf(AppLanguage.ENGLISH to "Distance Traveled", AppLanguage.SINHALA to "ගමන් කළ මුළු දුර"),
     "final_odo" to mapOf(AppLanguage.ENGLISH to "End Odometer Reading", AppLanguage.SINHALA to "අවසාන මීටර කියවීම"),
     "remaining_fuel" to mapOf(AppLanguage.ENGLISH to "Remaining Fuel in Tank", AppLanguage.SINHALA to "ටැංකියේ ඉතිරි ඉන්ධන"),
-    "btn_save" to mapOf(AppLanguage.ENGLISH to "Save to Logbook", AppLanguage.SINHALA to "සටහන සුරකින්න"),
+    "btn_save" to mapOf(AppLanguage.ENGLISH to "Next", AppLanguage.SINHALA to "Next"),
     "btn_clear" to mapOf(AppLanguage.ENGLISH to "Clear Inputs", AppLanguage.SINHALA to "හිස් කරන්න"),
     "history_title" to mapOf(AppLanguage.ENGLISH to "Saved Calculations", AppLanguage.SINHALA to "සුරැකි ගණනය කිරීම්"),
     "empty_history" to mapOf(AppLanguage.ENGLISH to "No saved calculations yet", AppLanguage.SINHALA to "තවමත් සුරැකි ගණනය කිරීම් නොමැත"),
@@ -87,11 +87,11 @@ fun CalculatorScreen(
     val savedCalculations by viewModel.odometerCalculations.collectAsState()
 
     // Parsing values safely for real-time calculation preview
-    val startOdo = startOdoText.toDoubleOrNull() ?: 0.0
-    val efficiency = efficiencyText.toDoubleOrNull() ?: 0.0
-    val consumed = consumedText.toDoubleOrNull() ?: 0.0
-    val initialFuel = initialFuelText.toDoubleOrNull() ?: 0.0
-    val obtained = obtainedFuelText.toDoubleOrNull() ?: 0.0
+    val startOdo = startOdoText.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
+    val efficiency = efficiencyText.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
+    val consumed = consumedText.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
+    val initialFuel = initialFuelText.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
+    val obtained = obtainedFuelText.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
 
     // Math formulas
     val calculatedDistance = consumed * efficiency
@@ -137,7 +137,7 @@ fun CalculatorScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
@@ -146,29 +146,23 @@ fun CalculatorScreen(
                             )
                         )
                     )
-                    .padding(20.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.Calculate,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = getStr("screen_title", currentLang),
-                        fontSize = 20.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (currentLang == AppLanguage.SINHALA) 
-                            "වාහන වල සහන් පොතේ සටහන් කිරීම සඳහා ගණන් හදන්න" 
-                            else "Calculate and log parameters for vehicle log books",
-                        fontSize = 12.sp,
-                        color = Color.White.copy(alpha = 0.85f)
                     )
                 }
             }
@@ -254,19 +248,6 @@ fun CalculatorScreen(
                         )
                     }
 
-                    // Consumed Fuel
-                    OutlinedTextField(
-                        value = consumedText,
-                        onValueChange = { consumedText = it },
-                        label = { Text(getStr("consumed", currentLang)) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        leadingIcon = { Icon(Icons.Default.LocalGasStation, contentDescription = null) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("calc_consumed_fuel"),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-
                     // Initial Fuel in Tank & Obtained Fuel in a Row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -294,6 +275,28 @@ fun CalculatorScreen(
                             shape = RoundedCornerShape(10.dp)
                         )
                     }
+
+                    // Consumed Fuel (Moved below, customized with red borders and labels)
+                    OutlinedTextField(
+                        value = consumedText,
+                        onValueChange = { consumedText = it },
+                        label = { Text(getStr("consumed", currentLang)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        leadingIcon = { Icon(Icons.Default.LocalGasStation, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("calc_consumed_fuel"),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color.Red,
+                            unfocusedBorderColor = Color.Red.copy(alpha = 0.7f),
+                            focusedLabelColor = Color.Red,
+                            unfocusedLabelColor = Color.Red.copy(alpha = 0.7f),
+                            cursorColor = Color.Red,
+                            focusedLeadingIconColor = Color.Red,
+                            unfocusedLeadingIconColor = Color.Red.copy(alpha = 0.7f)
+                        )
+                    )
 
                     Spacer(modifier = Modifier.height(4.dp))
 
@@ -603,7 +606,7 @@ fun SavedCalculationCard(
                         color = MaterialTheme.colorScheme.secondary
                     )
                     Text(
-                        text = "• ${if (currentLang == AppLanguage.SINHALA) "දුවපු දුර" else "Distance"}: ${String.format(Locale.US, "%.1f", (item.fuelConsumed * item.fuelEfficiency))} km",
+                        text = "• ${if (currentLang == AppLanguage.SINHALA) "ගමන් කළ මුළු දුර" else "Distance"}: ${String.format(Locale.US, "%.1f", (item.fuelConsumed * item.fuelEfficiency))} km",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
