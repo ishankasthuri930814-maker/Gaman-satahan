@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import android.content.Context
 import okhttp3.OkHttpClient
@@ -33,15 +34,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: TripRepository
     private val prefs = application.getSharedPreferences("vahanalog_prefs", Context.MODE_PRIVATE)
 
-    // Sheetson API configurations
-    private val SHEETSON_API_KEY = "x467G3-QIam9I2sLvtETpX6Pj8hgd_VB2p-NmWMuOQS1TQoXLnBeqE5nPi4"
-    private val SHEETSON_SPREADSHEET_ID = "1fxDVV0HtYwuGAj7iiPMMRzbzMNnE5NWrmEXMRyHg4NU"
-    private val SHEETSON_SHEET_NAME = "Sheet1"
-
     // Sync status states
     val syncUrl = MutableStateFlow("")
     val isSyncing = MutableStateFlow(false)
     val lastSyncTime = MutableStateFlow(0L)
+    val syncErrorMessage = MutableStateFlow<String?>(null)
+    val syncCooldownRemaining = MutableStateFlow(0L) // Remaining seconds of rate-limit cooldown
+    private var cooldownUntil = 0L
 
     // Dark Mode settings
     val isDarkMode = MutableStateFlow(prefs.getBoolean("is_dark_mode", false))
@@ -97,17 +96,57 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             initialValue = emptyList()
         )
 
-        // Set hardcoded Sheetson URL as requested by the user, making it unchangeable and safe
-        syncUrl.value = "https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME"
+        // Load SheetDB URL from SharedPreferences, falling back to default
+        val defaultUrl = "https://sheetdb.io/api/v1/qnwn1fg1i4k27"
+        val savedUrl = prefs.getString("sync_url", defaultUrl) ?: defaultUrl
+        if (savedUrl == "https://sheetdb.io/api/v1/jmizl4njqajdl" || savedUrl.isBlank() || savedUrl == defaultUrl) {
+            prefs.edit().putString("sync_url", defaultUrl).apply()
+            syncUrl.value = defaultUrl
+        } else {
+            syncUrl.value = savedUrl
+        }
         lastSyncTime.value = prefs.getLong("last_sync_time", 0L)
 
-        // Auto sync on start and then periodically every 45 seconds automatically
+        // Clear all vehicles, drivers, assistants on first launch after this update so the user can enter everything anew
+        val hasCleared = prefs.getBoolean("has_cleared_default_settings_v4", false)
+        if (!hasCleared) {
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    repository.deleteAllVehicles()
+                    repository.deleteAllDrivers()
+                    repository.deleteAllAssistants()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            prefs.edit().putBoolean("has_cleared_default_settings_v4", true).apply()
+        }
+
+        // Smart Cooldown Countdown Timer
         viewModelScope.launch {
             while (true) {
-                if (syncUrl.value.isNotBlank()) {
-                    syncWithGoogleSheets { _, _ -> }
+                val now = System.currentTimeMillis()
+                if (now < cooldownUntil) {
+                    syncCooldownRemaining.value = ((cooldownUntil - now) / 1000).coerceAtLeast(0)
+                } else {
+                    if (syncCooldownRemaining.value > 0) {
+                        syncCooldownRemaining.value = 0L
+                        syncErrorMessage.value = null // Clear error when cooldown completes
+                    }
                 }
-                kotlinx.coroutines.delay(45000) // 45 seconds background interval
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+
+        // Smart Auto Sync on Start and then every 90 seconds (near real-time but quota-safe)
+        viewModelScope.launch {
+            // Wait a brief moment on startup to let local database initialize
+            kotlinx.coroutines.delay(2000)
+            while (true) {
+                if (syncUrl.value.isNotBlank() && System.currentTimeMillis() >= cooldownUntil) {
+                    syncWithGoogleSheetsBackground()
+                }
+                kotlinx.coroutines.delay(90000) // 90 seconds background interval (uses 6x less quota than 15s)
             }
         }
     }
@@ -117,40 +156,139 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveSyncUrl(url: String) {
-        // Ignored to ensure the hardcoded SheetDB URL remains unchanged and completely secure
+        val cleanUrl = url.trim()
+        syncUrl.value = cleanUrl
+        prefs.edit().putString("sync_url", cleanUrl).apply()
     }
 
     fun syncWithGoogleSheets(onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        syncWithGoogleSheetsInternal(isManual = true, onResult = onResult)
+    }
+
+    fun syncWithGoogleSheetsBackground() {
+        syncWithGoogleSheetsInternal(isManual = false, onResult = { _, _ -> })
+    }
+
+    private fun syncWithGoogleSheetsInternal(isManual: Boolean, onResult: (Boolean, String) -> Unit) {
         val urlStr = syncUrl.value
         if (urlStr.isBlank()) {
             onResult(false, "Sync URL is not set!")
             return
         }
 
+        val nowTime = System.currentTimeMillis()
+        if (nowTime < cooldownUntil) {
+            val remainingSecs = ((cooldownUntil - nowTime) / 1000).coerceAtLeast(1)
+            val msg = if (currentLanguage.value == AppLanguage.SINHALA) {
+                "සමමුහුර්ත කිරීම තාවකාලිකව නවතා ඇත (Cooldown). තව තත්පර $remainingSecs කින් නැවත උත්සාහ කරන්න."
+            } else {
+                "Sync is on rate-limit cooldown. Try again in $remainingSecs seconds."
+            }
+            if (isManual) {
+                onResult(false, msg)
+            }
+            return
+        }
+
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             isSyncing.value = true
             try {
-                // 1. Fetch current local states
-                val localTrips = tripLogs.value
-                val localVehicles = vehicles.value
-                val localDrivers = drivers.value
-                val localAssistants = assistants.value
+                // 1. Fetch current local states from database flows using .first() to prevent race conditions or stale StateFlow values
+                val localTrips = repository.allTripLogs.first()
+                val localVehicles = repository.allVehicles.first()
+                val localDrivers = repository.allDrivers.first()
+                val localAssistants = repository.allAssistants.first()
 
                 val pendingVehicles = prefs.getStringSet("pending_vehicles", emptySet()) ?: emptySet()
                 val pendingDrivers = prefs.getStringSet("pending_drivers", emptySet()) ?: emptySet()
                 val pendingAssistants = prefs.getStringSet("pending_assistants", emptySet()) ?: emptySet()
                 val pendingTrips = prefs.getStringSet("pending_trips", emptySet()) ?: emptySet()
 
-                // 2. Fetch all entries from Sheetson via GET
+                val pendingDeletionsTrips = prefs.getStringSet("pending_deletions_trips", emptySet()) ?: emptySet()
+                val pendingDeletionsVehicles = prefs.getStringSet("pending_deletions_vehicles", emptySet()) ?: emptySet()
+                val pendingDeletionsDrivers = prefs.getStringSet("pending_deletions_drivers", emptySet()) ?: emptySet()
+                val pendingDeletionsAssistants = prefs.getStringSet("pending_deletions_assistants", emptySet()) ?: emptySet()
+
+                // 2. Setup OkHttpClient with timeouts
                 val client = okhttp3.OkHttpClient.Builder()
                     .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
 
+                // 3. Robust Offline-First Sync: Retry executing any pending deletes on the server
+                val updatedPendingDeletionsTrips = pendingDeletionsTrips.toMutableSet()
+                for (dt in pendingDeletionsTrips) {
+                    try {
+                        val deleteUrl = "$urlStr/dateTimeMillis/$dt"
+                        val request = okhttp3.Request.Builder().url(deleteUrl).delete().build()
+                        client.newCall(request).execute().use { response ->
+                            if (response.isSuccessful) {
+                                updatedPendingDeletionsTrips.remove(dt)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                val updatedPendingDeletionsVehicles = pendingDeletionsVehicles.toMutableSet()
+                for (dv in pendingDeletionsVehicles) {
+                    try {
+                        val encodedKey = java.net.URLEncoder.encode("__CONFIG_VEHICLE__$dv", "UTF-8")
+                        val deleteUrl = "$urlStr/destination/$encodedKey"
+                        val request = okhttp3.Request.Builder().url(deleteUrl).delete().build()
+                        client.newCall(request).execute().use { response ->
+                            if (response.isSuccessful) {
+                                updatedPendingDeletionsVehicles.remove(dv)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                val updatedPendingDeletionsDrivers = pendingDeletionsDrivers.toMutableSet()
+                for (dd in pendingDeletionsDrivers) {
+                    try {
+                        val encodedKey = java.net.URLEncoder.encode("__CONFIG_DRIVER__$dd", "UTF-8")
+                        val deleteUrl = "$urlStr/destination/$encodedKey"
+                        val request = okhttp3.Request.Builder().url(deleteUrl).delete().build()
+                        client.newCall(request).execute().use { response ->
+                            if (response.isSuccessful) {
+                                updatedPendingDeletionsDrivers.remove(dd)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                val updatedPendingDeletionsAssistants = pendingDeletionsAssistants.toMutableSet()
+                for (da in pendingDeletionsAssistants) {
+                    try {
+                        val encodedKey = java.net.URLEncoder.encode("__CONFIG_ASSISTANT__$da", "UTF-8")
+                        val deleteUrl = "$urlStr/destination/$encodedKey"
+                        val request = okhttp3.Request.Builder().url(deleteUrl).delete().build()
+                        client.newCall(request).execute().use { response ->
+                            if (response.isSuccessful) {
+                                updatedPendingDeletionsAssistants.remove(da)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                prefs.edit()
+                    .putStringSet("pending_deletions_trips", updatedPendingDeletionsTrips)
+                    .putStringSet("pending_deletions_vehicles", updatedPendingDeletionsVehicles)
+                    .putStringSet("pending_deletions_drivers", updatedPendingDeletionsDrivers)
+                    .putStringSet("pending_deletions_assistants", updatedPendingDeletionsAssistants)
+                    .apply()
+
+                // 4. Fetch all entries from SheetDB via GET
                 val getRequest = okhttp3.Request.Builder()
-                    .url("https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME")
-                    .header("Authorization", "Bearer $SHEETSON_API_KEY")
-                    .header("X-Spreadsheet-Id", SHEETSON_SPREADSHEET_ID)
+                    .url(urlStr)
                     .get()
                     .build()
 
@@ -158,16 +296,33 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                     if (!response.isSuccessful) {
                         launch(kotlinx.coroutines.Dispatchers.Main) {
                             isSyncing.value = false
-                            onResult(false, "HTTP Error: ${response.code}")
+                            if (response.code == 429) {
+                                cooldownUntil = System.currentTimeMillis() + (4 * 60 * 1000) // 4 minutes cooldown
+                                syncCooldownRemaining.value = 240L
+                                val msg = if (currentLanguage.value == AppLanguage.SINHALA) {
+                                    "ගූගල් ශීට් සීමාව ඉක්මවා ඇත (429). විනාඩි 4කට පසු ස්වයංක්‍රීයව ක්‍රියාත්මක වේ."
+                                } else {
+                                    "Google Sheets limit exceeded (429). Will auto-retry in 4 minutes."
+                                }
+                                syncErrorMessage.value = msg
+                                if (isManual) {
+                                    onResult(false, msg)
+                                }
+                            } else {
+                                val msg = "HTTP Error: ${response.code}"
+                                syncErrorMessage.value = msg
+                                if (isManual) {
+                                    onResult(false, msg)
+                                }
+                            }
                         }
                         return@use
                     }
 
-                    val responseBodyStr = response.body?.string() ?: "{\"results\":[]}"
+                    val responseBodyStr = response.body?.string() ?: "[]"
 
-                    // Parse response results array of server entries
-                    val rootObj = org.json.JSONObject(responseBodyStr)
-                    val serverArray = rootObj.optJSONArray("results") ?: org.json.JSONArray()
+                    // Parse response array of server entries
+                    val serverArray = org.json.JSONArray(responseBodyStr)
                     val serverTrips = mutableListOf<TripLog>()
                     val serverVehicles = mutableListOf<VehicleSetting>()
                     val serverDrivers = mutableListOf<DriverSetting>()
@@ -179,38 +334,43 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         if (destinationVal.startsWith("__CONFIG_VEHICLE__")) {
                             val plate = destinationVal.removePrefix("__CONFIG_VEHICLE__")
                             val desc = obj.optString("reason", "")
-                            if (plate.isNotBlank()) {
+                            if (plate.isNotBlank() && plate !in updatedPendingDeletionsVehicles) {
                                 serverVehicles.add(VehicleSetting(plateNumber = plate, description = desc))
                             }
                         } else if (destinationVal.startsWith("__CONFIG_DRIVER__")) {
                             val name = destinationVal.removePrefix("__CONFIG_DRIVER__")
                             val phone = obj.optString("reason", "")
-                            if (name.isNotBlank()) {
+                            if (name.isNotBlank() && name !in updatedPendingDeletionsDrivers) {
                                 serverDrivers.add(DriverSetting(name = name, phone = phone))
                             }
                         } else if (destinationVal.startsWith("__CONFIG_ASSISTANT__")) {
                             val name = destinationVal.removePrefix("__CONFIG_ASSISTANT__")
                             val phone = obj.optString("reason", "")
-                            if (name.isNotBlank()) {
+                            if (name.isNotBlank() && name !in updatedPendingDeletionsAssistants) {
                                 serverAssistants.add(AssistantSetting(name = name, phone = phone))
                             }
                         } else {
-                            val trip = TripLog(
-                                destination = destinationVal,
-                                reason = obj.optString("reason", ""),
-                                vehicleName = obj.optString("vehicleName", ""),
-                                driverName = obj.optString("driverName", ""),
-                                assistantName = obj.optString("assistantName", ""),
-                                distanceKm = obj.optDouble("distanceKm", 0.0),
-                                dateTimeMillis = obj.optLong("dateTimeMillis", 0L),
-                                fuelOrderNumber = obj.optString("fuelOrderNumber", ""),
-                                fuelLiters = obj.optDouble("fuelLiters", 0.0)
-                            )
-                            serverTrips.add(trip)
+                            val dateTimeMillisVal = obj.optLong("dateTimeMillis", 0L)
+                            if (dateTimeMillisVal.toString() !in updatedPendingDeletionsTrips) {
+                                val trip = TripLog(
+                                    destination = destinationVal,
+                                    reason = obj.optString("reason", ""),
+                                    vehicleName = obj.optString("vehicleName", ""),
+                                    driverName = obj.optString("driverName", ""),
+                                    assistantName = obj.optString("assistantName", ""),
+                                    distanceKm = obj.optDouble("distanceKm", 0.0),
+                                    dateTimeMillis = dateTimeMillisVal,
+                                    fuelOrderNumber = obj.optString("fuelOrderNumber", ""),
+                                    fuelLiters = obj.optDouble("fuelLiters", 0.0)
+                                )
+                                serverTrips.add(trip)
+                            }
                         }
                     }
 
-                    // 3. Add server trips that are missing locally to local DB
+                    val updatedPendingTrips = pendingTrips.toMutableSet()
+
+                    // 5. Add server trips that are missing locally to local DB (ignoring those marked for deletion)
                     var newTripsAdded = 0
                     for (serverTrip in serverTrips) {
                         val exists = localTrips.any { local ->
@@ -220,13 +380,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             local.dateTimeMillis == serverTrip.dateTimeMillis
                         }
 
-                        if (!exists) {
+                        if (!exists && serverTrip.dateTimeMillis.toString() !in updatedPendingDeletionsTrips) {
                             repository.insertTripLog(serverTrip)
                             newTripsAdded++
                         }
                     }
 
-                    // 4. Find local trips that are missing on server and upload them via POST if pending
+                    // 6. Find local trips that are missing on server and upload them via POST if pending
                     val tripsToUpload = mutableListOf<TripLog>()
                     for (localTrip in localTrips) {
                         val existsOnServer = serverTrips.any { serverTrip ->
@@ -235,7 +395,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             localTrip.driverName.trim().equals(serverTrip.driverName.trim(), ignoreCase = true) &&
                             localTrip.dateTimeMillis == serverTrip.dateTimeMillis
                         }
-                        if (!existsOnServer) {
+                        if (!existsOnServer && localTrip.dateTimeMillis.toString() !in updatedPendingDeletionsTrips) {
                             val isPending = localTrip.dateTimeMillis.toString() in pendingTrips
                             if (isPending) {
                                 tripsToUpload.add(localTrip)
@@ -246,11 +406,12 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // 5. Gather configurations to upload
+                    // 7. Gather configurations to upload
                     val configsToUpload = mutableListOf<org.json.JSONObject>()
 
                     val updatedPendingVehicles = pendingVehicles.toMutableSet()
                     for (lv in localVehicles) {
+                        if (lv.plateNumber in updatedPendingDeletionsVehicles) continue
                         val isPending = lv.plateNumber in pendingVehicles
                         val existsOnServer = serverVehicles.any { it.plateNumber == lv.plateNumber }
                         if (isPending || !existsOnServer) {
@@ -263,11 +424,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             obj.put("distanceKm", 0.0)
                             obj.put("dateTimeMillis", System.currentTimeMillis())
                             configsToUpload.add(obj)
+                            updatedPendingVehicles.remove(lv.plateNumber)
                         }
                     }
 
                     val updatedPendingDrivers = pendingDrivers.toMutableSet()
                     for (ld in localDrivers) {
+                        if (ld.name in updatedPendingDeletionsDrivers) continue
                         val isPending = ld.name in pendingDrivers
                         val existsOnServer = serverDrivers.any { it.name == ld.name }
                         if (isPending || !existsOnServer) {
@@ -280,11 +443,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             obj.put("distanceKm", 0.0)
                             obj.put("dateTimeMillis", System.currentTimeMillis())
                             configsToUpload.add(obj)
+                            updatedPendingDrivers.remove(ld.name)
                         }
                     }
 
                     val updatedPendingAssistants = pendingAssistants.toMutableSet()
                     for (la in localAssistants) {
+                        if (la.name in updatedPendingDeletionsAssistants) continue
                         val isPending = la.name in pendingAssistants
                         val existsOnServer = serverAssistants.any { it.name == la.name }
                         if (isPending || !existsOnServer) {
@@ -297,13 +462,11 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                             obj.put("distanceKm", 0.0)
                             obj.put("dateTimeMillis", System.currentTimeMillis())
                             configsToUpload.add(obj)
+                            updatedPendingAssistants.remove(la.name)
                         }
                     }
 
-                    val updatedPendingTrips = pendingTrips.toMutableSet()
-                    var hasUploadErrors = false
-
-                    // Send individual POST requests to Sheetson for each row
+                    val postArray = org.json.JSONArray()
                     for (trip in tripsToUpload) {
                         val obj = org.json.JSONObject()
                         obj.put("destination", trip.destination)
@@ -315,71 +478,38 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         obj.put("dateTimeMillis", trip.dateTimeMillis)
                         obj.put("fuelOrderNumber", trip.fuelOrderNumber)
                         obj.put("fuelLiters", trip.fuelLiters)
-
-                        val requestBody = obj.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-                        val postRequest = okhttp3.Request.Builder()
-                            .url("https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME")
-                            .header("Authorization", "Bearer $SHEETSON_API_KEY")
-                            .header("X-Spreadsheet-Id", SHEETSON_SPREADSHEET_ID)
-                            .post(requestBody)
-                            .build()
-
-                        try {
-                            client.newCall(postRequest).execute().use { postResponse ->
-                                if (postResponse.isSuccessful) {
-                                    updatedPendingTrips.remove(trip.dateTimeMillis.toString())
-                                } else {
-                                    hasUploadErrors = true
-                                }
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            hasUploadErrors = true
-                        }
+                        postArray.put(obj)
                     }
-
                     for (config in configsToUpload) {
-                        val requestBody = config.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                        postArray.put(config)
+                    }
+
+                    if (postArray.length() > 0) {
+                        val payload = org.json.JSONObject()
+                        payload.put("data", postArray)
+
+                        val requestBody = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
                         val postRequest = okhttp3.Request.Builder()
-                            .url("https://api.sheetson.com/v2/sheets/$SHEETSON_SHEET_NAME")
-                            .header("Authorization", "Bearer $SHEETSON_API_KEY")
-                            .header("X-Spreadsheet-Id", SHEETSON_SPREADSHEET_ID)
+                            .url(urlStr)
                             .post(requestBody)
                             .build()
 
-                        try {
-                            client.newCall(postRequest).execute().use { postResponse ->
-                                if (postResponse.isSuccessful) {
-                                    val dest = config.optString("destination")
-                                    if (dest.startsWith("__CONFIG_VEHICLE__")) {
-                                        val plate = dest.removePrefix("__CONFIG_VEHICLE__")
-                                        updatedPendingVehicles.remove(plate)
-                                    } else if (dest.startsWith("__CONFIG_DRIVER__")) {
-                                        val name = dest.removePrefix("__CONFIG_DRIVER__")
-                                        updatedPendingDrivers.remove(name)
-                                    } else if (dest.startsWith("__CONFIG_ASSISTANT__")) {
-                                        val name = dest.removePrefix("__CONFIG_ASSISTANT__")
-                                        updatedPendingAssistants.remove(name)
-                                    }
-                                } else {
-                                    hasUploadErrors = true
+                        client.newCall(postRequest).execute().use { postResponse ->
+                            if (postResponse.isSuccessful) {
+                                for (uploadedTrip in tripsToUpload) {
+                                    updatedPendingTrips.remove(uploadedTrip.dateTimeMillis.toString())
                                 }
+                                prefs.edit()
+                                    .putStringSet("pending_trips", updatedPendingTrips)
+                                    .putStringSet("pending_vehicles", updatedPendingVehicles)
+                                    .putStringSet("pending_drivers", updatedPendingDrivers)
+                                    .putStringSet("pending_assistants", updatedPendingAssistants)
+                                    .apply()
                             }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            hasUploadErrors = true
                         }
                     }
 
-                    // Save updated pending lists
-                    prefs.edit()
-                        .putStringSet("pending_trips", updatedPendingTrips)
-                        .putStringSet("pending_vehicles", updatedPendingVehicles)
-                        .putStringSet("pending_drivers", updatedPendingDrivers)
-                        .putStringSet("pending_assistants", updatedPendingAssistants)
-                        .apply()
-
-                    // 6. Align local databases with server configuration
+                    // 8. Align local databases with server configuration
                     for (sv in serverVehicles) {
                         val existsLocally = localVehicles.any { it.plateNumber == sv.plateNumber }
                         if (!existsLocally) {
@@ -389,7 +519,8 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                     for (lv in localVehicles) {
                         val existsOnServer = serverVehicles.any { it.plateNumber == lv.plateNumber }
                         val isPending = lv.plateNumber in pendingVehicles
-                        if (!existsOnServer && !isPending) {
+                        val isDeleted = lv.plateNumber in updatedPendingDeletionsVehicles
+                        if (!existsOnServer && !isPending && !isDeleted) {
                             repository.deleteVehicleByPlate(lv.plateNumber)
                         }
                     }
@@ -403,7 +534,8 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                     for (ld in localDrivers) {
                         val existsOnServer = serverDrivers.any { it.name == ld.name }
                         val isPending = ld.name in pendingDrivers
-                        if (!existsOnServer && !isPending) {
+                        val isDeleted = ld.name in updatedPendingDeletionsDrivers
+                        if (!existsOnServer && !isPending && !isDeleted) {
                             repository.deleteDriverByName(ld.name)
                         }
                     }
@@ -417,7 +549,8 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                     for (la in localAssistants) {
                         val existsOnServer = serverAssistants.any { it.name == la.name }
                         val isPending = la.name in pendingAssistants
-                        if (!existsOnServer && !isPending) {
+                        val isDeleted = la.name in updatedPendingDeletionsAssistants
+                        if (!existsOnServer && !isPending && !isDeleted) {
                             repository.deleteAssistantByName(la.name)
                         }
                     }
@@ -429,14 +562,22 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
 
                     launch(kotlinx.coroutines.Dispatchers.Main) {
                         isSyncing.value = false
-                        onResult(true, "Synced successfully! Added $newTripsAdded new trip(s) from cloud.")
+                        syncErrorMessage.value = null // clear error
+                        val successMsg = if (currentLanguage.value == AppLanguage.SINHALA) {
+                            "සාර්ථකව සමමුහුර්ත විය! නව ගමන්වාර $newTripsAdded ක් ලැබුණි."
+                        } else {
+                            "Synced successfully! Added $newTripsAdded new trip(s)."
+                        }
+                        onResult(true, successMsg)
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 launch(kotlinx.coroutines.Dispatchers.Main) {
                     isSyncing.value = false
-                    onResult(false, "Sync failed: ${e.message}")
+                    if (isManual) {
+                        onResult(false, "Sync failed: ${e.message}")
+                    }
                 }
             }
         }
@@ -474,18 +615,23 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             
             // Trigger auto sync in background if URL is set
             if (syncUrl.value.isNotBlank()) {
-                syncWithGoogleSheets()
+                syncWithGoogleSheetsBackground()
             }
         }
     }
 
     fun deleteTripLog(id: Int) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val tripLog = tripLogs.value.find { it.id == id }
+            val tripLog = repository.allTripLogs.first().find { it.id == id }
             repository.deleteTripLogById(id)
             
             if (tripLog != null) {
-                // Remove from pending trips
+                // Add to pending deletions to prevent resurrection
+                val pendingDeletions = prefs.getStringSet("pending_deletions_trips", emptySet())?.toMutableSet() ?: mutableSetOf()
+                pendingDeletions.add(tripLog.dateTimeMillis.toString())
+                prefs.edit().putStringSet("pending_deletions_trips", pendingDeletions).apply()
+
+                // Remove from pending trips if any
                 val pending = prefs.getStringSet("pending_trips", emptySet())?.toMutableSet() ?: mutableSetOf()
                 if (pending.remove(tripLog.dateTimeMillis.toString())) {
                     prefs.edit().putStringSet("pending_trips", pending).apply()
@@ -507,13 +653,20 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                         
                         client.newCall(request).execute().use { response ->
                             if (response.isSuccessful) {
-                                // Deleted from server successfully
+                                // Deleted from server successfully, remove from pending deletions
+                                val updatedPendingDeletions = prefs.getStringSet("pending_deletions_trips", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                if (updatedPendingDeletions.remove(tripLog.dateTimeMillis.toString())) {
+                                    prefs.edit().putStringSet("pending_deletions_trips", updatedPendingDeletions).apply()
+                                }
                             }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
                 }
+                
+                // Sync immediately to update status in background
+                syncWithGoogleSheetsBackground()
             }
         }
     }
@@ -550,7 +703,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun deleteConfigFromServer(destinationKey: String) {
+    private fun deleteConfigFromServer(destinationKey: String, deletionPrefKey: String? = null, deletionItemKey: String? = null) {
         val urlStr = syncUrl.value
         if (urlStr.isBlank()) return
         
@@ -570,7 +723,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
                 
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        // Deleted successfully
+                        // Deleted successfully, remove from pending deletions
+                        if (deletionPrefKey != null && deletionItemKey != null) {
+                            val pendingDeletions = prefs.getStringSet(deletionPrefKey, emptySet())?.toMutableSet() ?: mutableSetOf()
+                            if (pendingDeletions.remove(deletionItemKey)) {
+                                prefs.edit().putStringSet(deletionPrefKey, pendingDeletions).apply()
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -586,7 +745,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             val pending = prefs.getStringSet("pending_vehicles", emptySet())?.toMutableSet() ?: mutableSetOf()
             pending.add(plateNumber)
             prefs.edit().putStringSet("pending_vehicles", pending).apply()
-            syncWithGoogleSheets()
+            syncWithGoogleSheetsBackground()
         }
     }
 
@@ -597,7 +756,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             if (pending.remove(plateNumber)) {
                 prefs.edit().putStringSet("pending_vehicles", pending).apply()
             }
-            deleteConfigFromServer("__CONFIG_VEHICLE__$plateNumber")
+            
+            // Add to pending deletions to prevent resurrection
+            val pendingDeletions = prefs.getStringSet("pending_deletions_vehicles", emptySet())?.toMutableSet() ?: mutableSetOf()
+            pendingDeletions.add(plateNumber)
+            prefs.edit().putStringSet("pending_deletions_vehicles", pendingDeletions).apply()
+            
+            deleteConfigFromServer("__CONFIG_VEHICLE__$plateNumber", "pending_deletions_vehicles", plateNumber)
         }
     }
 
@@ -608,7 +773,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             val pending = prefs.getStringSet("pending_drivers", emptySet())?.toMutableSet() ?: mutableSetOf()
             pending.add(name)
             prefs.edit().putStringSet("pending_drivers", pending).apply()
-            syncWithGoogleSheets()
+            syncWithGoogleSheetsBackground()
         }
     }
 
@@ -619,7 +784,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             if (pending.remove(name)) {
                 prefs.edit().putStringSet("pending_drivers", pending).apply()
             }
-            deleteConfigFromServer("__CONFIG_DRIVER__$name")
+            
+            // Add to pending deletions to prevent resurrection
+            val pendingDeletions = prefs.getStringSet("pending_deletions_drivers", emptySet())?.toMutableSet() ?: mutableSetOf()
+            pendingDeletions.add(name)
+            prefs.edit().putStringSet("pending_deletions_drivers", pendingDeletions).apply()
+            
+            deleteConfigFromServer("__CONFIG_DRIVER__$name", "pending_deletions_drivers", name)
         }
     }
 
@@ -630,7 +801,7 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             val pending = prefs.getStringSet("pending_assistants", emptySet())?.toMutableSet() ?: mutableSetOf()
             pending.add(name)
             prefs.edit().putStringSet("pending_assistants", pending).apply()
-            syncWithGoogleSheets()
+            syncWithGoogleSheetsBackground()
         }
     }
 
@@ -641,7 +812,13 @@ class TripViewModel(application: Application) : AndroidViewModel(application) {
             if (pending.remove(name)) {
                 prefs.edit().putStringSet("pending_assistants", pending).apply()
             }
-            deleteConfigFromServer("__CONFIG_ASSISTANT__$name")
+            
+            // Add to pending deletions to prevent resurrection
+            val pendingDeletions = prefs.getStringSet("pending_deletions_assistants", emptySet())?.toMutableSet() ?: mutableSetOf()
+            pendingDeletions.add(name)
+            prefs.edit().putStringSet("pending_deletions_assistants", pendingDeletions).apply()
+            
+            deleteConfigFromServer("__CONFIG_ASSISTANT__$name", "pending_deletions_assistants", name)
         }
     }
 }

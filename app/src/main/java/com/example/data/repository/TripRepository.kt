@@ -87,5 +87,17 @@ class TripRepository(
     suspend fun deleteAssistantByName(name: String) {
         settingsDao.deleteAssistantByName(name)
     }
+
+    suspend fun deleteAllVehicles() {
+        settingsDao.deleteAllVehicles()
+    }
+
+    suspend fun deleteAllDrivers() {
+        settingsDao.deleteAllDrivers()
+    }
+
+    suspend fun deleteAllAssistants() {
+        settingsDao.deleteAllAssistants()
+    }
 }
 

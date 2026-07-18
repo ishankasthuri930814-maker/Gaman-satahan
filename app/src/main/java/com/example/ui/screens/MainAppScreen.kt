@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -43,6 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import com.example.data.model.PlannedTrip
 import com.example.data.model.TripLog
 import com.example.ui.translation.AppLanguage
@@ -58,12 +63,90 @@ enum class AppTab {
     SETTINGS
 }
 
+data class DriverColorPair(val bg: Color, val text: Color)
+
+fun getDriverColorPair(driverName: String): DriverColorPair {
+    if (driverName.isBlank() || driverName == "-") {
+        return DriverColorPair(
+            bg = Color(0xFFF5F5F5),
+            text = Color(0xFF616161)
+        )
+    }
+    val colors = listOf(
+        DriverColorPair(Color(0xFFE8F5E9), Color(0xFF2E7D32)), // Green
+        DriverColorPair(Color(0xFFE3F2FD), Color(0xFF1565C0)), // Blue
+        DriverColorPair(Color(0xFFFFEBEE), Color(0xFFC62828)), // Red
+        DriverColorPair(Color(0xFFF3E5F5), Color(0xFF6A1B9A)), // Purple
+        DriverColorPair(Color(0xFFFFF3E0), Color(0xFFE65100)), // Orange
+        DriverColorPair(Color(0xFFE0F7FA), Color(0xFF006064)), // Teal
+        DriverColorPair(Color(0xFFFFFDE7), Color(0xFFF57F17)), // Gold/Amber
+        DriverColorPair(Color(0xFFEFEBE9), Color(0xFF4E342E)), // Brown
+        DriverColorPair(Color(0xFFECEFF1), Color(0xFF37474F))  // Slate
+    )
+    val hash = driverName.hashCode().let { if (it < 0) -it else it }
+    return colors[hash % colors.size]
+}
+
+@Composable
+fun DriverDetailRow(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, iconColor: androidx.compose.ui.graphics.Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = iconColor,
+            modifier = Modifier.size(20.dp).padding(top = 2.dp)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column {
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            val driverCol = getDriverColorPair(value)
+            Box(
+                modifier = Modifier
+                    .background(driverCol.bg, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = value,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = driverCol.text
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainAppScreen(viewModel: TripViewModel) {
     val context = LocalContext.current
     val currentLang by viewModel.currentLanguage.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(AppTab.TRIPS) }
+
+    // Real-Time Sync on App Resume: Instantly fetch the latest SheetDB state when the app comes back to foreground/unlocked
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (viewModel.syncUrl.value.isNotBlank()) {
+                    viewModel.syncWithGoogleSheetsBackground()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // Alarm/Notification permission checking
     var hasNotificationPermission by remember {
@@ -252,6 +335,8 @@ fun TripLogsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
     val syncUrl by viewModel.syncUrl.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val lastSyncTime by viewModel.lastSyncTime.collectAsStateWithLifecycle()
+    val syncErrorMessage by viewModel.syncErrorMessage.collectAsStateWithLifecycle()
+    val syncCooldownRemaining by viewModel.syncCooldownRemaining.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
 
@@ -262,92 +347,6 @@ fun TripLogsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. CLOUD SYNC CARD
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Icon(
-                                    imageVector = Icons.Default.Cloud,
-                                    contentDescription = null,
-                                    tint = if (syncUrl.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = Translations.getString("sync_title", currentLang),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    if (syncUrl.isBlank()) {
-                                        Text(
-                                            text = if (currentLang == AppLanguage.SINHALA) "සමකාලීන කිරීම සකසා නැත (සැකසුම් බලන්න)" else "Not configured (Check Settings)",
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.error
-                                        )
-                                    } else {
-                                        val timeStr = if (lastSyncTime == 0L) {
-                                            if (currentLang == AppLanguage.SINHALA) "කිසිදිනක නැත" else "Never"
-                                        } else {
-                                            SimpleDateFormat("hh:mm a (MMM dd)", Locale.getDefault()).format(Date(lastSyncTime))
-                                        }
-                                        Text(
-                                            text = "${Translations.getString("last_synced", currentLang)}: $timeStr",
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-
-                            if (syncUrl.isNotBlank()) {
-                                Button(
-                                    onClick = {
-                                        viewModel.syncWithGoogleSheets { success, msg ->
-                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                                        }
-                                    },
-                                    enabled = !isSyncing,
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.height(36.dp)
-                                ) {
-                                    if (isSyncing) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.onPrimary
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(Translations.getString("syncing", currentLang), fontSize = if (currentLang == AppLanguage.SINHALA) 10.sp else 12.sp)
-                                    } else {
-                                        Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(Translations.getString("sync_button", currentLang), fontSize = if (currentLang == AppLanguage.SINHALA) 10.sp else 12.sp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // 3. TRIP HISTORY HEADER
             item {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -652,12 +651,19 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
-                        text = trip.driverName.ifBlank { "-" },
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    val driverCol = getDriverColorPair(trip.driverName)
+                    Box(
+                        modifier = Modifier
+                            .background(driverCol.bg, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = trip.driverName.ifBlank { "-" },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = driverCol.text
+                        )
+                    }
                 }
 
                 // Assistant Row
@@ -878,7 +884,7 @@ fun TripLogCard(trip: TripLog, currentLang: AppLanguage, onDelete: () -> Unit) {
                     )
                     
                     // Driver
-                    DetailRow(
+                    DriverDetailRow(
                         label = Translations.getString("driver", currentLang),
                         value = trip.driverName.ifBlank { "-" },
                         icon = Icons.Default.Person,
@@ -2155,10 +2161,12 @@ fun AddPlannedTripDialog(
 // 3. ANALYTICS & INSIGHTS SCREEN
 // ==========================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnalyticsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
     val trips by viewModel.tripLogs.collectAsStateWithLifecycle()
     val planned by viewModel.plannedTrips.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     // 1. Calculations
     val totalDistance = remember(trips) { trips.sumOf { it.distanceKm } }
@@ -2190,6 +2198,59 @@ fun AnalyticsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
             .toList()
             .sortedByDescending { it.second }
     }
+
+    // --- Search & Filtering States ---
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilterRange by remember { mutableStateOf("all") } // "all", "today", "yesterday", "7days", "30days", "custom"
+    var customStartDate by remember { mutableStateOf<Long?>(null) }
+    var customEndDate by remember { mutableStateOf<Long?>(null) }
+
+    val calendar = remember { Calendar.getInstance() }
+
+    val filteredTrips = remember(trips, searchQuery, selectedFilterRange, customStartDate, customEndDate) {
+        val todayCal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val startOfToday = todayCal.timeInMillis
+        val startOfYesterday = startOfToday - 24 * 60 * 60 * 1000L
+        val startOf7DaysAgo = startOfToday - 7 * 24 * 60 * 60 * 1000L
+        val startOf30DaysAgo = startOfToday - 30 * 24 * 60 * 60 * 1000L
+
+        trips.filter { trip ->
+            val dateMatches = when (selectedFilterRange) {
+                "today" -> trip.dateTimeMillis >= startOfToday
+                "yesterday" -> trip.dateTimeMillis >= startOfYesterday && trip.dateTimeMillis < startOfToday
+                "7days" -> trip.dateTimeMillis >= startOf7DaysAgo
+                "30days" -> trip.dateTimeMillis >= startOf30DaysAgo
+                "custom" -> {
+                    val s = customStartDate ?: 0L
+                    val e = customEndDate ?: Long.MAX_VALUE
+                    trip.dateTimeMillis >= s && trip.dateTimeMillis <= e
+                }
+                else -> true
+            }
+
+            val queryMatches = if (searchQuery.isBlank()) {
+                true
+            } else {
+                trip.destination.contains(searchQuery, ignoreCase = true) ||
+                trip.driverName.contains(searchQuery, ignoreCase = true) ||
+                trip.assistantName.contains(searchQuery, ignoreCase = true) ||
+                trip.vehicleName.contains(searchQuery, ignoreCase = true) ||
+                trip.reason.contains(searchQuery, ignoreCase = true)
+            }
+
+            dateMatches && queryMatches
+        }
+    }
+
+    // Filtered Metrics
+    val filteredDistance = remember(filteredTrips) { filteredTrips.sumOf { it.distanceKm } }
+    val filteredFuelLiters = remember(filteredTrips) { filteredTrips.sumOf { it.fuelLiters } }
+    val filteredTripsCount = filteredTrips.size
 
     LazyColumn(
         modifier = Modifier
@@ -2235,6 +2296,451 @@ fun AnalyticsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                     icon = Icons.Default.AlarmOn,
                     tint = MaterialTheme.colorScheme.tertiary
                 )
+            }
+        }
+
+        // --- NEW FEATURE 1: SEARCH PAST TRIPS & DATES CARD ---
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        RoundedCornerShape(16.dp)
+                    )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = if (currentLang == AppLanguage.SINHALA) "පසුගිය දින සෙවීම සහ වාර්තා" else "Search Past Days & Reports",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Date Filters Quick selection
+                    val rangeOptions = listOf(
+                        Triple("all", if (currentLang == AppLanguage.SINHALA) "සියල්ල" else "All", "all_filter"),
+                        Triple("today", if (currentLang == AppLanguage.SINHALA) "අද" else "Today", "today_filter"),
+                        Triple("yesterday", if (currentLang == AppLanguage.SINHALA) "ඊයේ" else "Y'day", "yesterday_filter"),
+                        Triple("7days", if (currentLang == AppLanguage.SINHALA) "දින 7" else "7 Days", "7days_filter"),
+                        Triple("30days", if (currentLang == AppLanguage.SINHALA) "දින 30" else "30 Days", "30days_filter"),
+                        Triple("custom", if (currentLang == AppLanguage.SINHALA) "වෙනත්" else "Custom", "custom_filter")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        rangeOptions.take(3).forEach { (id, label, tag) ->
+                            FilterChip(
+                                selected = selectedFilterRange == id,
+                                onClick = { selectedFilterRange = id },
+                                label = { Text(label, fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f).testTag(tag)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        rangeOptions.drop(3).forEach { (id, label, tag) ->
+                            FilterChip(
+                                selected = selectedFilterRange == id,
+                                onClick = { selectedFilterRange = id },
+                                label = { Text(label, fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f).testTag(tag)
+                            )
+                        }
+                    }
+
+                    // Custom date fields
+                    if (selectedFilterRange == "custom") {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Start Date
+                            OutlinedCard(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        val datePicker = DatePickerDialog(
+                                            context,
+                                            { _, year, month, day ->
+                                                calendar.set(year, month, day, 0, 0, 0)
+                                                customStartDate = calendar.timeInMillis
+                                            },
+                                            calendar.get(Calendar.YEAR),
+                                            calendar.get(Calendar.MONTH),
+                                            calendar.get(Calendar.DAY_OF_MONTH)
+                                        )
+                                        datePicker.show()
+                                    }
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = if (currentLang == AppLanguage.SINHALA) "ආරම්භක දිනය" else "Start Date",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    val startStr = customStartDate?.let { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it)) } ?: "-"
+                                    Text(text = startStr, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+
+                            // End Date
+                            OutlinedCard(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        val datePicker = DatePickerDialog(
+                                            context,
+                                            { _, year, month, day ->
+                                                calendar.set(year, month, day, 23, 59, 59)
+                                                customEndDate = calendar.timeInMillis
+                                            },
+                                            calendar.get(Calendar.YEAR),
+                                            calendar.get(Calendar.MONTH),
+                                            calendar.get(Calendar.DAY_OF_MONTH)
+                                        )
+                                        datePicker.show()
+                                    }
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = if (currentLang == AppLanguage.SINHALA) "අවසාන දිනය" else "End Date",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    val endStr = customEndDate?.let { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it)) } ?: "-"
+                                    Text(text = endStr, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Text Search input
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.fillMaxWidth().testTag("analytics_search_input"),
+                        label = { Text(if (currentLang == AppLanguage.SINHALA) "රියදුරු, වාහන හෝ ගමනාන්ත සොයන්න..." else "Search Driver, Vehicle, Destination...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (searchQuery.isNotBlank() || selectedFilterRange != "all" || customStartDate != null || customEndDate != null) {
+                                IconButton(onClick = {
+                                    searchQuery = ""
+                                    selectedFilterRange = "all"
+                                    customStartDate = null
+                                    customEndDate = null
+                                }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear Filters")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Matching results summary & Copy/Export button
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (currentLang == AppLanguage.SINHALA) "සොයාගත් ප්‍රතිඵල:" else "Filtered Summary:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = if (currentLang == AppLanguage.SINHALA) {
+                                        "ගමන් $filteredTripsCount | දුර: ${String.format(Locale.US, "%.1f", filteredDistance)} km | ඉන්ධන: ${String.format(Locale.US, "%.1f", filteredFuelLiters)} L"
+                                    } else {
+                                        "Trips: $filteredTripsCount | Dist: ${String.format(Locale.US, "%.1f", filteredDistance)} km | Fuel: ${String.format(Locale.US, "%.1f", filteredFuelLiters)} L"
+                                    },
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (filteredTrips.isEmpty()) {
+                                        Toast.makeText(context, if (currentLang == AppLanguage.SINHALA) "කොපි කිරීමට ගමන් නොමැත" else "No trips to copy", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val builder = java.lang.StringBuilder()
+                                        val titleText = if (currentLang == AppLanguage.SINHALA) "=== වාහන ගමන් වාර්තාව ===" else "=== VEHICLE TRIP REPORT ==="
+                                        builder.append("$titleText\n")
+                                        val dateRangeText = when (selectedFilterRange) {
+                                            "today" -> if (currentLang == AppLanguage.SINHALA) "දිනය: අද" else "Date: Today"
+                                            "yesterday" -> if (currentLang == AppLanguage.SINHALA) "දිනය: ඊයේ" else "Date: Yesterday"
+                                            "7days" -> if (currentLang == AppLanguage.SINHALA) "කාලය: පසුගිය දින 7" else "Period: Last 7 Days"
+                                            "30days" -> if (currentLang == AppLanguage.SINHALA) "කාලය: පසුගිය දින 30" else "Period: Last 30 Days"
+                                            "custom" -> {
+                                                val startStr = customStartDate?.let { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it)) } ?: "Start"
+                                                val endStr = customEndDate?.let { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it)) } ?: "End"
+                                                if (currentLang == AppLanguage.SINHALA) "කාලය: $startStr සිට $endStr" else "Period: $startStr to $endStr"
+                                            }
+                                            else -> if (currentLang == AppLanguage.SINHALA) "කාලය: සියලුම කාලය" else "Period: All Time"
+                                        }
+                                        builder.append("$dateRangeText\n")
+                                        if (searchQuery.isNotBlank()) {
+                                            builder.append("${if (currentLang == AppLanguage.SINHALA) "සෙවුම් පදය" else "Search Key"}: $searchQuery\n")
+                                        }
+                                        builder.append("----------------------------\n")
+                                        builder.append("${if (currentLang == AppLanguage.SINHALA) "මුළු ගමන්" else "Total Trips"}: $filteredTripsCount\n")
+                                        builder.append("${if (currentLang == AppLanguage.SINHALA) "මුළු දුර" else "Total Distance"}: ${String.format(Locale.US, "%.1f", filteredDistance)} km\n")
+                                        builder.append("${if (currentLang == AppLanguage.SINHALA) "මුළු ඉන්ධන" else "Total Fuel"}: ${String.format(Locale.US, "%.1f", filteredFuelLiters)} L\n")
+                                        builder.append("----------------------------\n\n")
+
+                                        filteredTrips.forEachIndexed { index, trip ->
+                                            val tripDate = SimpleDateFormat("yyyy-MM-dd hh:mm a", Locale.getDefault()).format(Date(trip.dateTimeMillis))
+                                            builder.append("${index + 1}) $tripDate\n")
+                                            builder.append("   ${if (currentLang == AppLanguage.SINHALA) "ගමනාන්තය" else "To"}: ${trip.destination}\n")
+                                            builder.append("   ${if (currentLang == AppLanguage.SINHALA) "රියදුරු" else "Driver"}: ${trip.driverName}\n")
+                                            builder.append("   ${if (currentLang == AppLanguage.SINHALA) "වාහනය" else "Vehicle"}: ${trip.vehicleName}\n")
+                                            builder.append("   ${if (currentLang == AppLanguage.SINHALA) "දුර" else "Distance"}: ${trip.distanceKm} km\n")
+                                            if (trip.fuelLiters > 0.0) {
+                                                builder.append("   ${if (currentLang == AppLanguage.SINHALA) "ඉන්ධන" else "Fuel"}: ${trip.fuelLiters} L (${trip.fuelOrderNumber})\n")
+                                            }
+                                            builder.append("\n")
+                                        }
+
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        val clip = android.content.ClipData.newPlainText("Vehicle Report", builder.toString())
+                                        clipboard.setPrimaryClip(clip)
+
+                                        Toast.makeText(context, if (currentLang == AppLanguage.SINHALA) "වාර්තාව කොපි කරන ලදි!" else "Report copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.height(34.dp).testTag("copy_report_button")
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (currentLang == AppLanguage.SINHALA) "වාර්තාව" else "Copy Report", fontSize = 11.sp)
+                            }
+                        }
+                    }
+
+                    // Expandable list matching search
+                    if (filteredTrips.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = if (currentLang == AppLanguage.SINHALA) "සොයාගත් ගමන් සටහන්:" else "Filtered Trip Logs:",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 280.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            filteredTrips.forEach { trip ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val dateText = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(trip.dateTimeMillis))
+                                            Text(text = dateText, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                                            Text(text = "${trip.distanceKm} km", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(text = trip.destination, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val driverCol = getDriverColorPair(trip.driverName)
+                                            Box(
+                                                modifier = Modifier
+                                                    .background(driverCol.bg, RoundedCornerShape(4.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                                            ) {
+                                                Text(text = trip.driverName, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = driverCol.text)
+                                            }
+                                            Text(
+                                                text = if (trip.vehicleName == "Vehicle A") "Vehicle A" else if (trip.vehicleName == "Vehicle B") "Vehicle B" else trip.vehicleName,
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (trip.fuelLiters > 0.0) {
+                                                Text(
+                                                    text = "⛽ ${trip.fuelLiters} L",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFD32F2F)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (currentLang == AppLanguage.SINHALA) "සොයාගත් ගමන් කිසිවක් නැත." else "No trips found matching criteria.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- NEW FEATURE 2: FUEL EFFICIENCY & COMPARISON CARD ---
+        item {
+            val fuelA = remember(trips) { trips.filter { it.vehicleName == "Vehicle A" }.sumOf { it.fuelLiters } }
+            val fuelB = remember(trips) { trips.filter { it.vehicleName == "Vehicle B" }.sumOf { it.fuelLiters } }
+            val economyA = if (distanceA > 0.0) distanceA / fuelA.coerceAtLeast(0.1) else 0.0
+            val economyB = if (distanceB > 0.0) distanceB / fuelB.coerceAtLeast(0.1) else 0.0
+
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        RoundedCornerShape(16.dp)
+                    )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocalGasStation,
+                            contentDescription = null,
+                            tint = Color(0xFFD32F2F),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = if (currentLang == AppLanguage.SINHALA) "ඉන්ධන පරිභෝජනය සහ කාර්යක්ෂමතාවය" else "Fuel Consumption & Efficiency",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Vehicle A Fuel info
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = Translations.getString("stats_vehicle_a", currentLang),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "${String.format(Locale.US, "%.1f", fuelA)} Liters",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (economyA > 0.0) "${String.format(Locale.US, "%.2f", economyA)} km/L" else "N/A",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // Divider line
+                        Box(modifier = Modifier.width(1.dp).height(50.dp).background(MaterialTheme.colorScheme.outlineVariant))
+
+                        // Vehicle B Fuel info
+                        Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                            Text(
+                                text = Translations.getString("stats_vehicle_b", currentLang),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "${String.format(Locale.US, "%.1f", fuelB)} Liters",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (economyB > 0.0) "${String.format(Locale.US, "%.2f", economyB)} km/L" else "N/A",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -2324,18 +2830,35 @@ fun AnalyticsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(vertical = 2.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            text = "${idx + 1}. ${pair.first}",
-                                            fontSize = 13.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        val driverCol = getDriverColorPair(pair.first)
+                                        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "${idx + 1}. ",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .background(driverCol.bg, RoundedCornerShape(4.dp))
+                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                            ) {
+                                                Text(
+                                                    text = pair.first,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = driverCol.text,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "${pair.second}x",
-                                            fontSize = 13.sp,
+                                            fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -2361,18 +2884,19 @@ fun AnalyticsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(vertical = 2.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
                                             text = "${idx + 1}. ${pair.first}",
-                                            fontSize = 13.sp,
+                                            fontSize = 12.sp,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f)
                                         )
                                         Text(
                                             text = "${pair.second}x",
-                                            fontSize = 13.sp,
+                                            fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -2769,11 +3293,12 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                val driverCol = getDriverColorPair(driver.name)
                                                 Box(
                                                     modifier = Modifier
                                                         .size(40.dp)
                                                         .background(
-                                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                                            driverCol.bg,
                                                             CircleShape
                                                         ),
                                                     contentAlignment = Alignment.Center
@@ -2781,7 +3306,7 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                                     Icon(
                                                         Icons.Default.Person,
                                                         contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        tint = driverCol.text,
                                                         modifier = Modifier.size(20.dp)
                                                     )
                                                 }
@@ -2801,8 +3326,8 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                                                 )
                                                             },
                                                             colors = SuggestionChipDefaults.suggestionChipColors(
-                                                                labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                                                                labelColor = driverCol.text,
+                                                                containerColor = driverCol.bg
                                                             ),
                                                             border = null,
                                                             modifier = Modifier.height(20.dp)
@@ -2913,6 +3438,8 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                     // Cloud sync configurations
                     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
                     val lastSyncTime by viewModel.lastSyncTime.collectAsStateWithLifecycle()
+                    val syncUrl by viewModel.syncUrl.collectAsStateWithLifecycle()
+                    var inputUrl by remember(syncUrl) { mutableStateOf(syncUrl) }
                     val context = LocalContext.current
 
                     LazyColumn(
@@ -2960,7 +3487,7 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = if (currentLang == AppLanguage.SINHALA) "ස්වයංක්‍රීයව තත්පර 45කට වරක් යාවත්කාලීන වේ" else "Auto-syncs in background every 45s",
+                                                text = if (currentLang == AppLanguage.SINHALA) "ස්වයංක්‍රීයව පසුබිමෙන් සමමුහුර්ත වේ" else "Auto-syncs in background",
                                                 fontSize = 12.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -3021,6 +3548,134 @@ fun SettingsScreen(viewModel: TripViewModel, currentLang: AppLanguage) {
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(Translations.getString("sync_button", currentLang), fontSize = if (currentLang == AppLanguage.SINHALA) 11.sp else 13.sp)
                                         }
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(
+                                        width = 1.dp,
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text(
+                                        text = if (currentLang == AppLanguage.SINHALA) "ඔබගේ ගූගල් ශීට් එක සම්බන්ධ කරන්න" else "Connect Your Google Sheet",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+
+                                    OutlinedTextField(
+                                        value = inputUrl,
+                                        onValueChange = { inputUrl = it },
+                                        label = { Text(if (currentLang == AppLanguage.SINHALA) "SheetDB API URL එක" else "SheetDB API URL") },
+                                        placeholder = { Text("https://sheetdb.io/api/v1/...") },
+                                        modifier = Modifier.fillMaxWidth().testTag("sheetdb_url_input"),
+                                        singleLine = true
+                                    )
+
+                                    Button(
+                                        onClick = {
+                                            if (inputUrl.isBlank()) {
+                                                Toast.makeText(context, if (currentLang == AppLanguage.SINHALA) "කරුණාකර වලංගු URL එකක් ඇතුළත් කරන්න!" else "Please enter a valid URL!", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                viewModel.saveSyncUrl(inputUrl)
+                                                Toast.makeText(context, if (currentLang == AppLanguage.SINHALA) "සබැඳිය සාර්ථකව යාවත්කාලීන විය!" else "Connection link updated successfully!", Toast.LENGTH_SHORT).show()
+                                                viewModel.syncWithGoogleSheetsBackground()
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(if (currentLang == AppLanguage.SINHALA) "සබැඳිය සුරකින්න (Save Link)" else "Save Connection Link", fontSize = if (currentLang == AppLanguage.SINHALA) 11.sp else 13.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(
+                                        width = 1.dp,
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Info,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = if (currentLang == AppLanguage.SINHALA) "පියවරෙන් පියවර මාර්ගෝපදේශය" else "Step-by-Step Setup Guide",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+
+                                    Divider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+
+                                    if (currentLang == AppLanguage.SINHALA) {
+                                        Text(
+                                            text = "ඔබගේ පෞද්ගලික ගූගල් ශීට් ගොනුවක් (Google Sheet) මෙම ඇප් එක සමඟ සම්බන්ධ කිරීමට පහත පියවර අනුගමනය කරන්න:",
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+
+                                        Text(
+                                            text = "1. ඔබගේ Gmail ලිපිනය මඟින් නව Google Sheet එකක් සාදා ගන්න.\n\n" +
+                                                    "2. එම ශීට් එකෙහි පළමු පේළියේ (A1 සිට I1 දක්වා කොටু වල) පහත පරිදි හරියටම ඉංග්‍රීසි අකුරින් Headers ඇතුළත් කරන්න (හිස්තැන් නොමැතිව):\n" +
+                                                    "   destination, reason, vehicleName, driverName, assistantName, distanceKm, dateTimeMillis, fuelOrderNumber, fuelLiters\n\n" +
+                                                    "3. sheetdb.io වෙබ් අඩවියට ගොස් ඔබගේ Google ගිණුම හරහා නොමිලේ ලියාපදිංචි වන්න (Login with Google).\n\n" +
+                                                    "4. ඔබ සාදාගත් Google Sheet එකෙහි සම්පූර්ණ ලින්ක් එක (Spreadsheet URL) SheetDB වෙබ් අඩවියේ 'CREATE NEW' යටතේ ලබා දී API URL එකක් සාදා ගන්න.\n\n" +
+                                                    "5. එලෙස ලැබෙන SheetDB API URL එක (උදා: https://sheetdb.io/api/v1/...) මෙහි ඉහත ඇති කොටුවට ඇතුළත් කර 'සබැඳිය සුරකින්න' බොත්තම ඔබන්න.",
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "Follow these simple steps to connect your own private Google Sheet with this app:",
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+
+                                        Text(
+                                            text = "1. Create a new Google Sheet in your Google Drive/Gmail account.\n\n" +
+                                                    "2. In the very first row (from columns A1 to I1), type the following headers exactly as shown (case-sensitive, no spaces):\n" +
+                                                    "   destination, reason, vehicleName, driverName, assistantName, distanceKm, dateTimeMillis, fuelOrderNumber, fuelLiters\n\n" +
+                                                    "3. Go to sheetdb.io and sign up for free using your Google Account (Login with Google).\n\n" +
+                                                    "4. Paste your Google Sheet URL under 'CREATE NEW' on SheetDB to generate your unique API Endpoint.\n\n" +
+                                                    "5. Copy that generated SheetDB API URL (e.g. https://sheetdb.io/api/v1/...) and paste it in the text field above, then click 'Save Connection Link'.",
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }

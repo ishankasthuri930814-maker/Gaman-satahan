@@ -97,6 +97,15 @@ interface SettingsDao {
 
     @Query("DELETE FROM assistants WHERE name = :name")
     suspend fun deleteAssistantByName(name: String)
+
+    @Query("DELETE FROM vehicles")
+    suspend fun deleteAllVehicles()
+
+    @Query("DELETE FROM drivers")
+    suspend fun deleteAllDrivers()
+
+    @Query("DELETE FROM assistants")
+    suspend fun deleteAllAssistants()
 }
 
 @Database(
@@ -123,23 +132,7 @@ abstract class AppDatabase : RoomDatabase() {
                 .addCallback(object : RoomDatabase.Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         super.onCreate(db)
-                        // Run initial pre-population inside coroutine scope
-                        CoroutineScope(Dispatchers.IO).launch {
-                            val settingsDao = getDatabase(context).settingsDao()
-                            
-                            // Default Vehicles
-                            settingsDao.insertVehicle(VehicleSetting(plateNumber = "WP CAB-1045", description = "Vehicle A (Toyota TownAce)"))
-                            settingsDao.insertVehicle(VehicleSetting(plateNumber = "WP LF-7290", description = "Vehicle B (Mahindra Bolero)"))
-                            
-                            // Default Drivers
-                            settingsDao.insertDriver(DriverSetting(name = "Sunil Shantha", phone = "071-2345678"))
-                            settingsDao.insertDriver(DriverSetting(name = "Kamil Perera", phone = "077-8765432"))
-                            settingsDao.insertDriver(DriverSetting(name = "Nimal Silva", phone = "076-1112223"))
-                            
-                            // Default Assistants
-                            settingsDao.insertAssistant(AssistantSetting(name = "Ruwan Kumara", phone = "072-2233445"))
-                            settingsDao.insertAssistant(AssistantSetting(name = "Amara Bandara", phone = "075-5566778"))
-                        }
+                        // No pre-population, start completely empty as requested
                     }
                 })
                 .fallbackToDestructiveMigration()
